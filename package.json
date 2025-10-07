@@ -36,7 +36,11 @@
     "watch": "vitest --watch",
     "test": "vitest --reporter=verbose run",
     "ci": "npm run lint && npm run typecheck && npm run build && npm run test",
-    "prepublishOnly": "npm run ci"
+    "prepublishOnly": "npm run ci",
+    "release": "npm run ci && release-it -n -i patch",
+    "release:minor": "npm run ci && release-it -n -i minor",
+    "release:major": "npm run ci && release-it -n -i major"
+
   },
   "author": "Martin Jonsson <martin.jonsson@gmail.com>",
   "license": "MIT",
@@ -52,11 +56,13 @@
     "@types/bun": "^1.2.20",
     "@types/node": "^22.17.1",
     "@types/retry": "^0.12.5",
+    "auto-changelog": "^2.5.0",
     "eslint": "^9.36.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.4",
     "expect-type": "^1.2.2",
     "prettier": "^3.6.2",
+    "release-it": "^19.0.5",
     "tough-cookie": "^6.0.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.45.0",
