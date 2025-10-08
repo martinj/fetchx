@@ -51,7 +51,14 @@ async function processOptions(
 	};
 
 	if (prefixUrl) {
-		url = new URL(url, prefixUrl);
+		const urlString = url.toString();
+		const normalizedUrl = urlString.startsWith('/') ? urlString.slice(1) : urlString;
+		if (normalizedUrl === '') {
+			url = new URL(prefixUrl);
+		} else {
+			const normalizedPrefix = prefixUrl.endsWith('/') ? prefixUrl : `${prefixUrl}/`;
+			url = new URL(normalizedUrl, normalizedPrefix);
+		}
 	}
 
 	if (!(url instanceof URL)) {
