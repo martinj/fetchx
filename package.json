@@ -1,6 +1,6 @@
 {
   "name": "@martinj/fetchx",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "fetch with batteries",
   "keywords": [
     "http",
