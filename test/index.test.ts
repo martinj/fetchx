@@ -306,6 +306,92 @@ describe('request', () => {
 		expect(response.id).toBe(1);
 	});
 
+	describe('prefixUrl handling', () => {
+		test('should preserve base path when url starts with slash', async () => {
+			const extendedRequest = fetchx.extend({
+				prefixUrl: 'http://base.com/v1'
+			});
+
+			vi.spyOn(global, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+				const url = input instanceof URL ? input : new URL(input.toString());
+				expect(url.toString()).toBe('http://base.com/v1/users');
+				return Promise.resolve(new Response('OK', {status: 200}));
+			});
+
+			await extendedRequest('/users');
+		});
+
+		test('should preserve base path when url does not start with slash', async () => {
+			const extendedRequest = fetchx.extend({
+				prefixUrl: 'http://base.com/v1'
+			});
+
+			vi.spyOn(global, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+				const url = input instanceof URL ? input : new URL(input.toString());
+				expect(url.toString()).toBe('http://base.com/v1/users');
+				return Promise.resolve(new Response('OK', {status: 200}));
+			});
+
+			await extendedRequest('users');
+		});
+
+		test('should handle prefixUrl with trailing slash and path with leading slash', async () => {
+			const extendedRequest = fetchx.extend({
+				prefixUrl: 'http://base.com/v1/'
+			});
+
+			vi.spyOn(global, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+				const url = input instanceof URL ? input : new URL(input.toString());
+				expect(url.toString()).toBe('http://base.com/v1/users');
+				return Promise.resolve(new Response('OK', {status: 200}));
+			});
+
+			await extendedRequest('/users');
+		});
+
+		test('should handle nested paths with prefixUrl', async () => {
+			const extendedRequest = fetchx.extend({
+				prefixUrl: 'http://base.com/api/v2'
+			});
+
+			vi.spyOn(global, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+				const url = input instanceof URL ? input : new URL(input.toString());
+				expect(url.toString()).toBe('http://base.com/api/v2/users/123/posts');
+				return Promise.resolve(new Response('OK', {status: 200}));
+			});
+
+			await extendedRequest('/users/123/posts');
+		});
+
+		test('should handle empty path with prefixUrl', async () => {
+			const extendedRequest = fetchx.extend({
+				prefixUrl: 'http://base.com/v1/users'
+			});
+
+			vi.spyOn(global, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+				const url = input instanceof URL ? input : new URL(input.toString());
+				expect(url.toString()).toBe('http://base.com/v1/users');
+				return Promise.resolve(new Response('OK', {status: 200}));
+			});
+
+			await extendedRequest('');
+		});
+
+		test('should handle prefixUrl without base path', async () => {
+			const extendedRequest = fetchx.extend({
+				prefixUrl: 'http://base.com'
+			});
+
+			vi.spyOn(global, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+				const url = input instanceof URL ? input : new URL(input.toString());
+				expect(url.toString()).toBe('http://base.com/users');
+				return Promise.resolve(new Response('OK', {status: 200}));
+			});
+
+			await extendedRequest('/users');
+		});
+	});
+
 	test('should throw an error when request exceeds timeout', async () => {
 		const timeout = 10;
 
