@@ -47,6 +47,47 @@ const api = fetchx.extend({
 const userData = await api('/users/123');
 ```
 
+## Use cases
+
+### Service-to-service resilience (timeout + retry)
+
+```typescript
+const res = await fetchx('https://service.internal/health', {
+  timeout: 1500,
+  retry: {retries: 2, minTimeout: 100, statusCodes: [503, 504]}
+});
+```
+
+### Rate-limit handling (Retry-After)
+
+```typescript
+await fetchx('https://api.example.com/limit', {
+  retry: {retries: 3, minTimeout: 0, statusCodes: [429], maxRetryAfter: 10_000}
+});
+```
+
+### Cookie-backed session
+
+```typescript
+import {CookieJar} from 'tough-cookie';
+
+const cookieJar = new CookieJar();
+const res = await fetchx('https://example.com/me', {cookieJar});
+```
+
+### Request signing / auth header
+
+```typescript
+const client = fetchx.extend({
+  async beforeRequest(url, opts) {
+    opts.headers.set('authorization', `Bearer ${process.env.TOKEN}`);
+    return {url, opts};
+  }
+});
+
+await client('https://api.example.com/secure');
+```
+
 ## Options
 
 The module accepts all standard `fetch` options plus these additional features:
@@ -149,6 +190,25 @@ This is particularly useful for:
 
 Note: The `jsonBody` property on `HttpError` allows you to access the parsed response body in error handlers without consuming the response stream again.
 
+## TypeScript
+
+Return type depends on `json`:
+- `json: true` (or `extend({json: true})`) => `Promise<T>`
+- otherwise => `Promise<Response>`
+
+```typescript
+// json: true => typed JSON
+const user = await fetchx<User>('https://api.example.com/users/1', {json: true});
+
+// no json => Response
+const res = await fetchx('https://api.example.com/users/1');
+
+// extend default json, override per call
+const api = fetchx.extend({json: true});
+const a = await api<User>('/users/1'); // Promise<User>
+const b = await api('/users/1', {json: false}); // Promise<Response>
+```
+
 ## Error Handling
 
 The module throws `HttpError` for non-2xx responses:
@@ -163,3 +223,8 @@ try {
   }
 }
 ```
+
+## Runtime
+
+- Node.js 22+ (global `fetch` / `Response`)
+- Works in Bun (uses standard `fetch` APIs)
