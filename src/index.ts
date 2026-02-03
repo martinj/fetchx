@@ -283,6 +283,10 @@ type MergeOptions<D extends CreateOptions, O extends RequestOptions | undefined>
 		: Omit<D, keyof O> & O
 	: D;
 
+type MergeExtend<D extends CreateOptions, O extends CreateOptions | undefined> = O extends CreateOptions
+	? Omit<D, keyof O> & O
+	: D;
+
 export type Request<D extends CreateOptions = CreateOptions> = {
 	<T = unknown>(url: string | URL): RequestReturn<D, T>;
 	<T = unknown, O extends RequestOptions & {json: true} = RequestOptions & {json: true}>(
@@ -298,7 +302,7 @@ export type Request<D extends CreateOptions = CreateOptions> = {
 		url: string | URL,
 		options?: O
 	): RequestReturn<MergeOptions<D, O>, T>;
-	extend<T extends CreateOptions>(extendOpts: T): Request<MergeOptions<D, T>>;
+	extend<T extends CreateOptions>(extendOpts: T): Request<MergeExtend<D, T>>;
 };
 
 export type ToughCookieJar = {

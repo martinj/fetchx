@@ -153,4 +153,16 @@ describe('Type Tests', () => {
 		const result = client<User>('https://example.com', opts);
 		expectTypeOf(result).toEqualTypeOf<Promise<User | Response>>();
 	});
+
+	test('should apply extend overrides when extend options are widened', () => {
+		interface User {
+			id: number;
+		}
+
+		const base = fetchx.extend({json: true});
+		const override: RequestOptions = {json: false};
+		const overridden = base.extend(override);
+		const result = overridden<User>('https://example.com');
+		expectTypeOf(result).toEqualTypeOf<Promise<Response>>();
+	});
 });
