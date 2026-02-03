@@ -17,11 +17,7 @@ export class HttpError extends Error {
 	isRetryable: boolean;
 	jsonBody?: unknown;
 
-	constructor(
-		response: Response,
-		message?: string,
-		options?: {isRetryable?: boolean; jsonBody?: unknown}
-	) {
+	constructor(response: Response, message?: string, options?: {isRetryable?: boolean; jsonBody?: unknown}) {
 		super(message || `HTTP error! status: ${response.status}`);
 		this.response = response;
 		this.statusCode = response.status;
