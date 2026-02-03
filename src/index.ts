@@ -134,6 +134,9 @@ function create(defaultOpts: CreateOptions = {}): Request {
 
 					if (!res.ok) {
 						if (!throwOnHttpError) {
+							if (pOpts.cookieJar) {
+								await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
+							}
 							throw new HttpError(res, undefined, {isNon2xxResponse: true});
 						}
 						let jsonBody: unknown;
@@ -278,7 +281,9 @@ type RequestReturn<D extends CreateOptions, T> = D['json'] extends true
 	: Promise<Response>;
 
 type MergeOptions<D extends CreateOptions, O extends RequestOptions | undefined> = O extends RequestOptions
-	? Omit<D, keyof O> & O
+	? [RequestOptions] extends [O]
+		? D
+		: Omit<D, keyof O> & O
 	: D;
 
 export type Request<D extends CreateOptions = CreateOptions> = {
@@ -296,7 +301,7 @@ export type Request<D extends CreateOptions = CreateOptions> = {
 		url: string | URL,
 		options?: O
 	): RequestReturn<MergeOptions<D, O>, T>;
-	extend<T extends CreateOptions>(extendOpts: T): Request<T & D>;
+	extend<T extends CreateOptions>(extendOpts: T): Request<MergeOptions<D, T>>;
 };
 
 export type ToughCookieJar = {

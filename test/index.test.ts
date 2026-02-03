@@ -290,6 +290,22 @@ describe('request', () => {
 		).rejects.toThrow(HttpError);
 	});
 
+	test('should store cookies for non-2xx when throwOnHttpError is false', async () => {
+		const cookieJar = {
+			getCookieString: vi.fn().mockResolvedValue(''),
+			setCookie: vi.fn()
+		};
+
+		vi.spyOn(global, 'fetch').mockImplementation(() =>
+			Promise.resolve(new Response(null, {status: 302, headers: {'Set-Cookie': 'session=abc123'}}))
+		);
+
+		const response = await fetchx('https://example.com/redirect', {throwOnHttpError: false, cookieJar});
+
+		expect(response.status).toBe(302);
+		expect(cookieJar.setCookie).toHaveBeenCalledTimes(1);
+	});
+
 	test('should retry on specified status codes', async () => {
 		const mockFetch = vi
 			.spyOn(global, 'fetch')

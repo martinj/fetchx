@@ -1,7 +1,7 @@
 import {expectTypeOf} from 'expect-type';
 import {beforeEach, describe, test, vi} from 'vitest';
 
-import fetchx from '../src/index';
+import fetchx, {type RequestOptions} from '../src/index';
 
 describe('Type Tests', () => {
 	beforeEach(() => {
@@ -93,6 +93,17 @@ describe('Type Tests', () => {
 		expectTypeOf(result2).toEqualTypeOf<Promise<Data>>();
 	});
 
+	test('should apply extend override order for literal booleans', () => {
+		interface Data {
+			value: string;
+		}
+
+		const base = fetchx.extend({json: true});
+		const overridden = base.extend({json: false});
+		const result = overridden<Data>('https://example.com');
+		expectTypeOf(result).toEqualTypeOf<Promise<Response>>();
+	});
+
 	test('should return Response union when json is true and throwOnHttpError is false', () => {
 		interface User {
 			id: number;
@@ -130,5 +141,16 @@ describe('Type Tests', () => {
 
 		const result2 = fetchx<Data>('https://example.com', {throwOnHttpError: false});
 		expectTypeOf(result2).toEqualTypeOf<Promise<Response>>();
+	});
+
+	test('should preserve extend defaults when options are widened', () => {
+		interface User {
+			id: number;
+		}
+
+		const client = fetchx.extend({json: true, throwOnHttpError: false});
+		const opts: RequestOptions = {};
+		const result = client<User>('https://example.com', opts);
+		expectTypeOf(result).toEqualTypeOf<Promise<User | Response>>();
 	});
 });
