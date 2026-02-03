@@ -119,6 +119,57 @@ describe('request', () => {
 		await expect(fetchx('https://jsonplaceholder.typicode.com/nonexistent')).rejects.toThrow(HttpError);
 	});
 
+	test('should return Response for non-2xx when throwOnHttpError is false', async () => {
+		vi.spyOn(global, 'fetch').mockImplementation(() => Promise.resolve(new Response('Not Found', {status: 404})));
+
+		const response = await fetchx('https://example.com/nonexistent', {throwOnHttpError: false});
+		expect(response).toBeInstanceOf(Response);
+		expect(response.status).toBe(404);
+	});
+
+	test('should return Response for non-2xx when json is true and throwOnHttpError is false', async () => {
+		const errorBody = {error: 'Not Found', message: 'Resource does not exist'};
+		vi.spyOn(global, 'fetch').mockImplementation(() =>
+			Promise.resolve(
+				new Response(JSON.stringify(errorBody), {
+					status: 404,
+					headers: {'content-type': 'application/json'}
+				})
+			)
+		);
+
+		const response = await fetchx<typeof errorBody>('https://example.com/nonexistent', {
+			json: true,
+			throwOnHttpError: false
+		});
+
+		expect(response).toBeInstanceOf(Response);
+		if (response instanceof Response) {
+			const data = await response.json();
+			expect(data).toEqual(errorBody);
+		} else {
+			expect.fail('Expected Response');
+		}
+	});
+
+	test('should return parsed JSON for ok response when throwOnHttpError is false', async () => {
+		const mockData = {ok: true};
+		vi.spyOn(global, 'fetch').mockImplementation(() =>
+			Promise.resolve(new Response(JSON.stringify(mockData), {status: 200}))
+		);
+
+		const data = await fetchx<typeof mockData>('https://example.com/ok', {
+			json: true,
+			throwOnHttpError: false
+		});
+
+		if (data instanceof Response) {
+			expect.fail('Expected JSON');
+		} else {
+			expect(data.ok).toBe(true);
+		}
+	});
+
 	test('should include jsonBody in HttpError when json option is true and response contains JSON', async () => {
 		const errorBody = {error: 'Not Found', message: 'Resource does not exist'};
 		vi.spyOn(global, 'fetch').mockImplementation(() =>
@@ -205,6 +256,40 @@ describe('request', () => {
 		}
 	});
 
+	test('should expose Location for manual redirect when throwOnHttpError is false', async () => {
+		const location = 'https://example.com/login';
+		vi.spyOn(global, 'fetch').mockImplementation(() =>
+			Promise.resolve(new Response(null, {status: 302, headers: {location}}))
+		);
+
+		let afterCalled = false;
+		const response = await fetchx('https://example.com/redirect', {
+			redirect: 'manual',
+			throwOnHttpError: false,
+			async afterResponse(response: Response) {
+				afterCalled = true;
+				return response;
+			}
+		});
+
+		expect(afterCalled).toBe(true);
+		expect(response.status).toBe(302);
+		expect(response.headers.get('location')).toBe(location);
+	});
+
+	test('should not swallow HttpError thrown in afterResponse when throwOnHttpError is false', async () => {
+		vi.spyOn(global, 'fetch').mockImplementation(() => Promise.resolve(new Response('OK', {status: 200})));
+
+		await expect(
+			fetchx('https://example.com/ok', {
+				throwOnHttpError: false,
+				async afterResponse(response: Response) {
+					throw new HttpError(response, 'Hook error');
+				}
+			})
+		).rejects.toThrow(HttpError);
+	});
+
 	test('should retry on specified status codes', async () => {
 		const mockFetch = vi
 			.spyOn(global, 'fetch')
@@ -212,6 +297,21 @@ describe('request', () => {
 			.mockResolvedValueOnce(new Response('OK', {status: 200}));
 
 		const response = await fetchx('https://example.com', {
+			retry: {retries: 1, minTimeout: 0, statusCodes: [503]}
+		});
+
+		expect(response.status).toBe(200);
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+	});
+
+	test('should retry on specified status codes when throwOnHttpError is false', async () => {
+		const mockFetch = vi
+			.spyOn(global, 'fetch')
+			.mockResolvedValueOnce(new Response('Retry', {status: 503}))
+			.mockResolvedValueOnce(new Response('OK', {status: 200}));
+
+		const response = await fetchx('https://example.com', {
+			throwOnHttpError: false,
 			retry: {retries: 1, minTimeout: 0, statusCodes: [503]}
 		});
 

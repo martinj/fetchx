@@ -92,4 +92,43 @@ describe('Type Tests', () => {
 		const result2 = jsonClient<Data>('https://example.com');
 		expectTypeOf(result2).toEqualTypeOf<Promise<Data>>();
 	});
+
+	test('should return Response union when json is true and throwOnHttpError is false', () => {
+		interface User {
+			id: number;
+		}
+
+		const result1 = fetchx<User>('https://example.com', {json: true, throwOnHttpError: false});
+		expectTypeOf(result1).toEqualTypeOf<Promise<User | Response>>();
+
+		const result2 = fetchx('https://example.com', {json: true, throwOnHttpError: false});
+		expectTypeOf(result2).toEqualTypeOf<Promise<unknown | Response>>();
+
+		const client = fetchx.extend({json: true, throwOnHttpError: false});
+		const result3 = client<User>('https://example.com');
+		expectTypeOf(result3).toEqualTypeOf<Promise<User | Response>>();
+
+		const result4 = client('https://example.com');
+		expectTypeOf(result4).toEqualTypeOf<Promise<unknown | Response>>();
+
+		const jsonClient = fetchx.extend({json: true});
+		const result5 = jsonClient<User>('https://example.com', {throwOnHttpError: false});
+		expectTypeOf(result5).toEqualTypeOf<Promise<User | Response>>();
+
+		const throwClient = fetchx.extend({throwOnHttpError: false});
+		const result6 = throwClient<User>('https://example.com', {json: true});
+		expectTypeOf(result6).toEqualTypeOf<Promise<User | Response>>();
+	});
+
+	test('should return Response when throwOnHttpError is false without json', () => {
+		interface Data {
+			value: string;
+		}
+
+		const result1 = fetchx('https://example.com', {throwOnHttpError: false});
+		expectTypeOf(result1).toEqualTypeOf<Promise<Response>>();
+
+		const result2 = fetchx<Data>('https://example.com', {throwOnHttpError: false});
+		expectTypeOf(result2).toEqualTypeOf<Promise<Response>>();
+	});
 });

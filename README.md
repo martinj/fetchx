@@ -95,6 +95,7 @@ The module accepts all standard `fetch` options plus these additional features:
 ### Basic Options
 
 - `json`: `boolean` - Automatically parse response as JSON
+- `throwOnHttpError`: `boolean` - Throw `HttpError` for non-2xx responses (default: true)
 - `jsonBody`: `unknown` - Automatically JSON.stringify request body and set JSON headers
 - `timeout`: `number` - Request timeout in milliseconds
 - `prefixUrl`: `string` - Base URL to prepend to all request URLs
@@ -223,6 +224,21 @@ try {
   }
 }
 ```
+
+To handle non-2xx responses without exceptions, set `throwOnHttpError: false`:
+
+```typescript
+const res = await fetchx('https://example.com', {
+  redirect: 'manual',
+  throwOnHttpError: false
+});
+
+if (res.status >= 300 && res.status < 400) {
+  console.log(res.headers.get('location'));
+}
+```
+
+Note: When `json: true` and `throwOnHttpError: false`, non-2xx responses return a raw `Response` (not parsed JSON).
 
 ## Runtime
 
