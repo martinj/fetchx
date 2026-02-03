@@ -193,8 +193,9 @@ Note: The `jsonBody` property on `HttpError` allows you to access the parsed res
 
 ## TypeScript
 
-Return type depends on `json`:
-- `json: true` (or `extend({json: true})`) => `Promise<T>`
+Return type depends on `json` and `throwOnHttpError`:
+- `json: true` (or `extend({json: true})`) + `throwOnHttpError: true` (default) => `Promise<T>`
+- `json: true` + `throwOnHttpError: false` => `Promise<T | Response>`
 - otherwise => `Promise<Response>`
 
 ```typescript
@@ -208,6 +209,7 @@ const res = await fetchx('https://api.example.com/users/1');
 const api = fetchx.extend({json: true});
 const a = await api<User>('/users/1'); // Promise<User>
 const b = await api('/users/1', {json: false}); // Promise<Response>
+const c = await api('/users/1', {throwOnHttpError: false}); // Promise<User | Response>
 ```
 
 ## Error Handling

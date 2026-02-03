@@ -15,23 +15,22 @@ export class HttpError extends Error {
 	response: Response;
 	statusCode: number;
 	isRetryable: boolean;
-	// Internal: set only for fetchx auto-thrown non-2xx errors when throwOnHttpError is false.
-	isNon2xxResponse: boolean;
 	jsonBody?: unknown;
 
 	constructor(
 		response: Response,
 		message?: string,
-		options?: {isRetryable?: boolean; jsonBody?: unknown; isNon2xxResponse?: boolean}
+		options?: {isRetryable?: boolean; jsonBody?: unknown}
 	) {
 		super(message || `HTTP error! status: ${response.status}`);
 		this.response = response;
 		this.statusCode = response.status;
 		this.isRetryable = options?.isRetryable ?? false;
-		this.isNon2xxResponse = options?.isNon2xxResponse ?? false;
 		this.jsonBody = options?.jsonBody;
 	}
 }
+
+const non2xxResponseErrors = new WeakSet<HttpError>();
 
 async function getCookieHeader(cookieJar: ToughCookieJar, prefixUrl: string) {
 	const cookieString: string = await cookieJar.getCookieString(prefixUrl);
@@ -137,7 +136,9 @@ function create(defaultOpts: CreateOptions = {}): Request {
 							if (pOpts.cookieJar) {
 								await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
 							}
-							throw new HttpError(res, undefined, {isNon2xxResponse: true});
+							const error = new HttpError(res);
+							non2xxResponseErrors.add(error);
+							throw error;
 						}
 						let jsonBody: unknown;
 						if (pOpts.json) {
@@ -198,7 +199,7 @@ function create(defaultOpts: CreateOptions = {}): Request {
 				}
 			);
 		} catch (error) {
-			if (!throwOnHttpError && error instanceof HttpError && error.isNon2xxResponse) {
+			if (!throwOnHttpError && error instanceof HttpError && non2xxResponseErrors.has(error)) {
 				return error.response;
 			}
 			throw error;
