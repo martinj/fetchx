@@ -378,6 +378,10 @@ describe('request', () => {
 			name: 'grow backoff when factor is 2',
 			factor: 2,
 			expectedDelays: [10, 20]
+		},
+		{
+			name: 'use fetchx default exponential backoff when factor is omitted',
+			expectedDelays: [10, 20]
 		}
 	])('should $name', async ({factor, expectedDelays}) => {
 		vi.useFakeTimers();
@@ -391,9 +395,9 @@ describe('request', () => {
 		const responsePromise = fetchx('https://example.com', {
 			retry: {
 				retries: 2,
-				factor,
 				minTimeout: 10,
-				statusCodes: [503]
+				statusCodes: [503],
+				...(factor === undefined ? {} : {factor})
 			}
 		});
 

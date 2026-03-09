@@ -6,6 +6,7 @@ import {calculateRetryAfter, mergeHeaders} from './lib/utils.js';
 
 const defaultRetryConfig: RetryOptions = {
 	retries: 2,
+	factor: 2,
 	minTimeout: 50,
 	statusCodes: [408, 413, 429, 500, 502, 503, 504, 521, 522, 524],
 	networkErrors: true
