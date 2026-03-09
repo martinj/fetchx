@@ -11,6 +11,7 @@ describe('request', () => {
 
 	afterEach(async () => {
 		vi.restoreAllMocks();
+		vi.useRealTimers();
 		await server?.stop();
 	});
 
@@ -365,6 +366,58 @@ describe('request', () => {
 		// Should merge: retries: 3 (from defaults), minTimeout: 0 (from request), statusCodes: [503] (from request, overrides default)
 		expect(response.status).toBe(200);
 		expect(mockFetch).toHaveBeenCalledTimes(2);
+	});
+
+	test.each([
+		{
+			name: 'keep constant backoff when factor is 1',
+			factor: 1,
+			expectedDelays: [10, 10]
+		},
+		{
+			name: 'grow backoff when factor is 2',
+			factor: 2,
+			expectedDelays: [10, 20]
+		},
+		{
+			name: 'use fetchx default exponential backoff when factor is omitted',
+			expectedDelays: [10, 20]
+		}
+	])('should $name', async ({factor, expectedDelays}) => {
+		vi.useFakeTimers();
+
+		const mockFetch = vi
+			.spyOn(global, 'fetch')
+			.mockResolvedValueOnce(new Response('Retry 1', {status: 503}))
+			.mockResolvedValueOnce(new Response('Retry 2', {status: 503}))
+			.mockResolvedValueOnce(new Response('OK', {status: 200}));
+
+		const responsePromise = fetchx('https://example.com', {
+			retry: {
+				retries: 2,
+				minTimeout: 10,
+				statusCodes: [503],
+				...(factor === undefined ? {} : {factor})
+			}
+		});
+
+		await vi.advanceTimersByTimeAsync(0);
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(expectedDelays[0] - 1);
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+
+		await vi.advanceTimersByTimeAsync(1);
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+
+		await vi.advanceTimersByTimeAsync(expectedDelays[1] - 1);
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+
+		await vi.advanceTimersByTimeAsync(1);
+
+		const response = await responsePromise;
+		expect(response.status).toBe(200);
+		expect(mockFetch).toHaveBeenCalledTimes(3);
 	});
 
 	test('should handle cookies with CookieJar', async () => {

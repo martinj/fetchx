@@ -54,9 +54,11 @@ const userData = await api('/users/123');
 ```typescript
 const res = await fetchx('https://service.internal/health', {
   timeout: 1500,
-  retry: {retries: 2, minTimeout: 100, statusCodes: [503, 504]}
+  retry: {retries: 2, factor: 1, minTimeout: 100, statusCodes: [503, 504]}
 });
 ```
+
+Set `factor: 1` for constant backoff. The default `factor: 2` uses exponential backoff.
 
 ### Rate-limit handling (Retry-After)
 
@@ -107,10 +109,11 @@ The module accepts all standard `fetch` options plus these additional features:
 {
   retry: {
     retries: number;           // Number of retry attempts (default: 2)
+    factor: number;            // Backoff multiplier (default: 2, use 1 for constant delays)
     minTimeout: number;        // Minimum time between retries in ms (default: 50)
     maxRetryAfter: number;     // Maximum retry-after time to respect in ms
     statusCodes: number[];     // Status codes to retry (default: [408, 413, 429, 500, 502, 503, 504, 521, 522, 524])
-    networkErrors: boolean;    // Wether do retries on network errors (default: true)
+    networkErrors: boolean;    // Whether to retry on network errors (default: true)
     onFailedAttempt: (context: {error: Error; attemptNumber: number; retriesLeft: number;}) => void | Promise<void> | undefined
 
     /**
