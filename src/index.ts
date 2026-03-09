@@ -162,6 +162,7 @@ function create(defaultOpts: CreateOptions = {}): Request {
 				},
 				{
 					retries: pOpts.retry?.retries,
+					factor: pOpts.retry?.factor,
 					minTimeout: pOpts.retry?.minTimeout,
 					signal: pOpts.signal ?? undefined,
 					async shouldRetry(context: RetryContext) {
@@ -215,7 +216,7 @@ type RequestOptionsWithHeaders = Omit<RequestOptions, 'headers'> & {
 	headers: Headers;
 };
 
-export type RetryOptions = Pick<PRetryOptions, 'retries' | 'minTimeout' | 'onFailedAttempt'> & {
+export type RetryOptions = Pick<PRetryOptions, 'retries' | 'factor' | 'minTimeout' | 'onFailedAttempt'> & {
 	/**
 	 * Maximum retry after in ms (overrides retries)
 	 * If retry-after header is greater than maxRetryAfter, the request will not be retried

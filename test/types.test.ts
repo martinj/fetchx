@@ -47,6 +47,18 @@ describe('Type Tests', () => {
 		expectTypeOf(result2).toEqualTypeOf<Promise<Response>>();
 	});
 
+	test('should accept retry factor in request options', () => {
+		const result = fetchx('https://example.com', {
+			retry: {
+				retries: 2,
+				factor: 1,
+				minTimeout: 10
+			}
+		});
+
+		expectTypeOf(result).toEqualTypeOf<Promise<Response>>();
+	});
+
 	test('should return typed response when generic is provided without json option', () => {
 		interface ApiResponse {
 			success: boolean;
