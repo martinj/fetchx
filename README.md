@@ -95,6 +95,7 @@ The module accepts all standard `fetch` options plus these additional features:
 ### Basic Options
 
 - `json`: `boolean` - Automatically parse response as JSON
+- `throwOnHttpError`: `boolean` - Throw `HttpError` for non-2xx responses (default: true)
 - `jsonBody`: `unknown` - Automatically JSON.stringify request body and set JSON headers
 - `timeout`: `number` - Request timeout in milliseconds
 - `prefixUrl`: `string` - Base URL to prepend to all request URLs
@@ -192,8 +193,9 @@ Note: The `jsonBody` property on `HttpError` allows you to access the parsed res
 
 ## TypeScript
 
-Return type depends on `json`:
-- `json: true` (or `extend({json: true})`) => `Promise<T>`
+Return type depends on `json` and `throwOnHttpError`:
+- `json: true` (or `extend({json: true})`) + `throwOnHttpError: true` (default) => `Promise<T>`
+- `json: true` + `throwOnHttpError: false` => `Promise<T | Response>`
 - otherwise => `Promise<Response>`
 
 ```typescript
@@ -207,6 +209,7 @@ const res = await fetchx('https://api.example.com/users/1');
 const api = fetchx.extend({json: true});
 const a = await api<User>('/users/1'); // Promise<User>
 const b = await api('/users/1', {json: false}); // Promise<Response>
+const c = await api('/users/1', {throwOnHttpError: false}); // Promise<User | Response>
 ```
 
 ## Error Handling
@@ -223,6 +226,21 @@ try {
   }
 }
 ```
+
+To handle non-2xx responses without exceptions, set `throwOnHttpError: false`:
+
+```typescript
+const res = await fetchx('https://example.com', {
+  redirect: 'manual',
+  throwOnHttpError: false
+});
+
+if (res.status >= 300 && res.status < 400) {
+  console.log(res.headers.get('location'));
+}
+```
+
+Note: When `json: true` and `throwOnHttpError: false`, non-2xx responses return a raw `Response` (not parsed JSON).
 
 ## Runtime
 

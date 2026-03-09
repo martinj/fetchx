@@ -1,7 +1,7 @@
 import {expectTypeOf} from 'expect-type';
 import {beforeEach, describe, test, vi} from 'vitest';
 
-import fetchx from '../src/index';
+import fetchx, {type RequestOptions} from '../src/index';
 
 describe('Type Tests', () => {
 	beforeEach(() => {
@@ -91,5 +91,78 @@ describe('Type Tests', () => {
 		// Keep json: true from extend
 		const result2 = jsonClient<Data>('https://example.com');
 		expectTypeOf(result2).toEqualTypeOf<Promise<Data>>();
+	});
+
+	test('should apply extend override order for literal booleans', () => {
+		interface Data {
+			value: string;
+		}
+
+		const base = fetchx.extend({json: true});
+		const overridden = base.extend({json: false});
+		const result = overridden<Data>('https://example.com');
+		expectTypeOf(result).toEqualTypeOf<Promise<Response>>();
+	});
+
+	test('should return Response union when json is true and throwOnHttpError is false', () => {
+		interface User {
+			id: number;
+		}
+
+		const result1 = fetchx<User>('https://example.com', {json: true, throwOnHttpError: false});
+		expectTypeOf(result1).toEqualTypeOf<Promise<User | Response>>();
+
+		const result2 = fetchx('https://example.com', {json: true, throwOnHttpError: false});
+		expectTypeOf(result2).toEqualTypeOf<Promise<unknown | Response>>();
+
+		const client = fetchx.extend({json: true, throwOnHttpError: false});
+		const result3 = client<User>('https://example.com');
+		expectTypeOf(result3).toEqualTypeOf<Promise<User | Response>>();
+
+		const result4 = client('https://example.com');
+		expectTypeOf(result4).toEqualTypeOf<Promise<unknown | Response>>();
+
+		const jsonClient = fetchx.extend({json: true});
+		const result5 = jsonClient<User>('https://example.com', {throwOnHttpError: false});
+		expectTypeOf(result5).toEqualTypeOf<Promise<User | Response>>();
+
+		const throwClient = fetchx.extend({throwOnHttpError: false});
+		const result6 = throwClient<User>('https://example.com', {json: true});
+		expectTypeOf(result6).toEqualTypeOf<Promise<User | Response>>();
+	});
+
+	test('should return Response when throwOnHttpError is false without json', () => {
+		interface Data {
+			value: string;
+		}
+
+		const result1 = fetchx('https://example.com', {throwOnHttpError: false});
+		expectTypeOf(result1).toEqualTypeOf<Promise<Response>>();
+
+		const result2 = fetchx<Data>('https://example.com', {throwOnHttpError: false});
+		expectTypeOf(result2).toEqualTypeOf<Promise<Response>>();
+	});
+
+	test('should preserve extend defaults when options are widened', () => {
+		interface User {
+			id: number;
+		}
+
+		const client = fetchx.extend({json: true, throwOnHttpError: false});
+		const opts: RequestOptions = {};
+		const result = client<User>('https://example.com', opts);
+		expectTypeOf(result).toEqualTypeOf<Promise<User | Response>>();
+	});
+
+	test('should apply extend overrides when extend options are widened', () => {
+		interface User {
+			id: number;
+		}
+
+		const base = fetchx.extend({json: true});
+		const override: RequestOptions = {json: false};
+		const overridden = base.extend(override);
+		const result = overridden<User>('https://example.com');
+		expectTypeOf(result).toEqualTypeOf<Promise<Response>>();
 	});
 });

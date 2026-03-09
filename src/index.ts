@@ -26,6 +26,8 @@ export class HttpError extends Error {
 	}
 }
 
+const non2xxResponseErrors = new WeakSet<HttpError>();
+
 async function getCookieHeader(cookieJar: ToughCookieJar, prefixUrl: string) {
 	const cookieString: string = await cookieJar.getCookieString(prefixUrl);
 	if (typeof cookieString === 'string' && cookieString.length > 0) {
@@ -114,74 +116,90 @@ function create(defaultOpts: CreateOptions = {}): Request {
 
 	async function request<T>(url: string | URL, opts: RequestOptions = {}): Promise<T | Response> {
 		const {url: pUrl, opts: pOpts} = await processOptions(defaults, url, opts);
+		const throwOnHttpError = pOpts.throwOnHttpError ?? true;
 
-		return pRetry(
-			async () => {
-				let res = await fetch(pUrl, pOpts);
+		try {
+			return await pRetry(
+				async () => {
+					let res = await fetch(pUrl, pOpts);
 
-				if (pOpts.afterResponse) {
-					res = await pOpts.afterResponse(res, pUrl, pOpts);
-				}
-
-				if (!res.ok) {
-					let jsonBody: unknown;
-					if (pOpts.json) {
-						try {
-							jsonBody = await res.json();
-							// eslint-disable-next-line no-empty
-						} catch {}
+					if (pOpts.afterResponse) {
+						res = await pOpts.afterResponse(res, pUrl, pOpts);
 					}
-					throw new HttpError(res, undefined, {jsonBody});
-				}
 
-				if (pOpts.cookieJar) {
-					await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
-				}
-
-				if (pOpts.json) {
-					// Handle responses with no content (204, 205)
-					if (res.status === 204 || res.status === 205) {
-						return null as T;
-					}
-					return res.json() as Promise<T>;
-				}
-
-				return res;
-			},
-			{
-				retries: pOpts.retry?.retries,
-				minTimeout: pOpts.retry?.minTimeout,
-				signal: pOpts.signal ?? undefined,
-				async shouldRetry(context: RetryContext) {
-					const {error} = context;
-					if (!(error instanceof HttpError)) {
-						if (pOpts.retry?.networkErrors && isNetworkError(error)) {
-							return true;
+					if (!res.ok) {
+						if (!throwOnHttpError) {
+							if (pOpts.cookieJar) {
+								await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
+							}
+							const error = new HttpError(res);
+							non2xxResponseErrors.add(error);
+							throw error;
 						}
-						return pOpts.retry?.shouldRetry ? pOpts.retry.shouldRetry(context) : false;
+						let jsonBody: unknown;
+						if (pOpts.json) {
+							try {
+								jsonBody = await res.json();
+								// eslint-disable-next-line no-empty
+							} catch {}
+						}
+						throw new HttpError(res, undefined, {jsonBody});
 					}
 
-					const shouldRetry = Boolean(
-						error.isRetryable || (pOpts.retry?.statusCodes && pOpts.retry.statusCodes.includes(error.statusCode))
-					);
-
-					if (!shouldRetry) {
-						return false;
+					if (pOpts.cookieJar) {
+						await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
 					}
 
-					const retryAfter = calculateRetryAfter(error.response);
-					if (retryAfter) {
-						if (pOpts.retry?.maxRetryAfter && retryAfter > pOpts.retry.maxRetryAfter) {
+					if (pOpts.json) {
+						// Handle responses with no content (204, 205)
+						if (res.status === 204 || res.status === 205) {
+							return null as T;
+						}
+						return res.json() as Promise<T>;
+					}
+
+					return res;
+				},
+				{
+					retries: pOpts.retry?.retries,
+					minTimeout: pOpts.retry?.minTimeout,
+					signal: pOpts.signal ?? undefined,
+					async shouldRetry(context: RetryContext) {
+						const {error} = context;
+						if (!(error instanceof HttpError)) {
+							if (pOpts.retry?.networkErrors && isNetworkError(error)) {
+								return true;
+							}
+							return pOpts.retry?.shouldRetry ? pOpts.retry.shouldRetry(context) : false;
+						}
+
+						const shouldRetry = Boolean(
+							error.isRetryable || (pOpts.retry?.statusCodes && pOpts.retry.statusCodes.includes(error.statusCode))
+						);
+
+						if (!shouldRetry) {
 							return false;
 						}
-						await scheduler.wait(retryAfter);
-					}
 
-					return shouldRetry;
-				},
-				onFailedAttempt: pOpts.retry?.onFailedAttempt
+						const retryAfter = calculateRetryAfter(error.response);
+						if (retryAfter) {
+							if (pOpts.retry?.maxRetryAfter && retryAfter > pOpts.retry.maxRetryAfter) {
+								return false;
+							}
+							await scheduler.wait(retryAfter);
+						}
+
+						return shouldRetry;
+					},
+					onFailedAttempt: pOpts.retry?.onFailedAttempt
+				}
+			);
+		} catch (error) {
+			if (!throwOnHttpError && error instanceof HttpError && non2xxResponseErrors.has(error)) {
+				return error.response;
 			}
-		);
+			throw error;
+		}
 	}
 
 	request.extend = (extendOpts: CreateOptions) => {
@@ -229,6 +247,10 @@ export type RequestOptions = RequestInit & {
 	searchParams?: URLSearchParamsInit;
 	cookieJar?: ToughCookieJar;
 	json?: boolean;
+	/**
+	 * Throw HttpError for non-2xx responses (default true)
+	 */
+	throwOnHttpError?: boolean;
 	jsonBody?: unknown;
 	timeout?: number;
 	/**
@@ -249,13 +271,38 @@ export type CreateOptions = RequestOptions & {
 	json?: boolean;
 };
 
+type RequestReturn<D extends CreateOptions, T> = D['json'] extends true
+	? D['throwOnHttpError'] extends false
+		? Promise<T | Response>
+		: Promise<T>
+	: Promise<Response>;
+
+type MergeOptions<D extends CreateOptions, O extends RequestOptions | undefined> = O extends RequestOptions
+	? [RequestOptions] extends [O]
+		? D
+		: Omit<D, keyof O> & O
+	: D;
+
+type MergeExtend<D extends CreateOptions, O extends CreateOptions | undefined> = O extends CreateOptions
+	? Omit<D, keyof O> & O
+	: D;
+
 export type Request<D extends CreateOptions = CreateOptions> = {
-	<T = unknown>(url: string | URL): D['json'] extends true ? Promise<T> : Promise<Response>;
+	<T = unknown>(url: string | URL): RequestReturn<D, T>;
+	<T = unknown, O extends RequestOptions & {json: true} = RequestOptions & {json: true}>(
+		url: string | URL,
+		options?: O
+	): RequestReturn<MergeOptions<D, O>, T>;
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	<T = unknown>(url: string | URL, options?: RequestOptions & {json: false}): Promise<Response>;
-	<T = unknown>(url: string | URL, options?: RequestOptions & {json: true}): Promise<T>;
-	<T = unknown>(url: string | URL, options?: RequestOptions): D['json'] extends true ? Promise<T> : Promise<Response>;
-	extend<T extends CreateOptions>(extendOpts: T): Request<T & D>;
+	<T = unknown, O extends RequestOptions & {json: false} = RequestOptions & {json: false}>(
+		url: string | URL,
+		options?: O
+	): Promise<Response>;
+	<T = unknown, O extends RequestOptions = RequestOptions>(
+		url: string | URL,
+		options?: O
+	): RequestReturn<MergeOptions<D, O>, T>;
+	extend<T extends CreateOptions>(extendOpts: T): Request<MergeExtend<D, T>>;
 };
 
 export type ToughCookieJar = {
