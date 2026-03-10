@@ -136,12 +136,16 @@ describe('Type Tests', () => {
 		expectTypeOf(jsonClient<User>('https://example.com', {throwOnHttpError: false})).toEqualTypeOf<
 			Promise<User | Response>
 		>();
+		const widenedFalseOpts: RequestOptions & {json: true} = {json: true, throwOnHttpError: false};
+		expectTypeOf(fetchx<User>('https://example.com', widenedFalseOpts)).toEqualTypeOf<Promise<User | Response>>();
 
 		const throwClient = fetchx.extend({throwOnHttpError: false});
 		expectTypeOf(throwClient<User>('https://example.com', {json: true})).toEqualTypeOf<Promise<User | Response>>();
 		expectTypeOf(throwClient<User>('https://example.com', {json: true, throwOnHttpError: true})).toEqualTypeOf<
 			Promise<User>
 		>();
+		const widenedTrueOpts: RequestOptions & {json: true} = {json: true, throwOnHttpError: true};
+		expectTypeOf(throwClient<User>('https://example.com', widenedTrueOpts)).toEqualTypeOf<Promise<User | Response>>();
 	});
 
 	test('should return Response when throwOnHttpError is false without json', () => {

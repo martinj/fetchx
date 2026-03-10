@@ -398,10 +398,20 @@ export type Request<D extends CreateOptions = CreateOptions> = {
 		url: string | URL,
 		options?: O
 	): Promise<T | Response>;
-	<T = unknown, O extends RequestOptions & {json: true} = RequestOptions & {json: true}>(
+	<
+		T = unknown,
+		O extends RequestOptions & {json: true; throwOnHttpError?: undefined} = RequestOptions & {
+			json: true;
+			throwOnHttpError?: undefined;
+		}
+	>(
 		url: string | URL,
 		options?: O
 	): D extends {throwOnHttpError: false} | {throwOnHttpError?: false} ? Promise<T | Response> : Promise<T>;
+	<T = unknown, O extends RequestOptions & {json: true} = RequestOptions & {json: true}>(
+		url: string | URL,
+		options?: O
+	): Promise<T | Response>;
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	<T = unknown, O extends RequestOptions & {json: false} = RequestOptions & {json: false}>(
 		url: string | URL,
