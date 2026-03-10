@@ -1,7 +1,7 @@
 import {expectTypeOf} from 'expect-type';
 import {beforeEach, describe, test, vi} from 'vitest';
 
-import fetchx, {type RequestOptions} from '../src/index';
+import fetchx, {type RequestOptions} from '../src/index.js';
 
 describe('Type Tests', () => {
 	beforeEach(() => {
@@ -121,26 +121,31 @@ describe('Type Tests', () => {
 			id: number;
 		}
 
-		const result1 = fetchx<User>('https://example.com', {json: true, throwOnHttpError: false});
-		expectTypeOf(result1).toEqualTypeOf<Promise<User | Response>>();
-
-		const result2 = fetchx('https://example.com', {json: true, throwOnHttpError: false});
-		expectTypeOf(result2).toEqualTypeOf<Promise<unknown | Response>>();
+		expectTypeOf(fetchx<User>('https://example.com', {json: true, throwOnHttpError: false})).toEqualTypeOf<
+			Promise<User | Response>
+		>();
+		expectTypeOf(fetchx('https://example.com', {json: true, throwOnHttpError: false})).toEqualTypeOf<
+			Promise<unknown | Response>
+		>();
 
 		const client = fetchx.extend({json: true, throwOnHttpError: false});
-		const result3 = client<User>('https://example.com');
-		expectTypeOf(result3).toEqualTypeOf<Promise<User | Response>>();
-
-		const result4 = client('https://example.com');
-		expectTypeOf(result4).toEqualTypeOf<Promise<unknown | Response>>();
+		expectTypeOf(client<User>('https://example.com')).toEqualTypeOf<Promise<User | Response>>();
+		expectTypeOf(client('https://example.com')).toEqualTypeOf<Promise<unknown | Response>>();
 
 		const jsonClient = fetchx.extend({json: true});
-		const result5 = jsonClient<User>('https://example.com', {throwOnHttpError: false});
-		expectTypeOf(result5).toEqualTypeOf<Promise<User | Response>>();
+		expectTypeOf(jsonClient<User>('https://example.com', {throwOnHttpError: false})).toEqualTypeOf<
+			Promise<User | Response>
+		>();
+		const widenedFalseOpts: RequestOptions & {json: true} = {json: true, throwOnHttpError: false};
+		expectTypeOf(fetchx<User>('https://example.com', widenedFalseOpts)).toEqualTypeOf<Promise<User | Response>>();
 
 		const throwClient = fetchx.extend({throwOnHttpError: false});
-		const result6 = throwClient<User>('https://example.com', {json: true});
-		expectTypeOf(result6).toEqualTypeOf<Promise<User | Response>>();
+		expectTypeOf(throwClient<User>('https://example.com', {json: true})).toEqualTypeOf<Promise<User | Response>>();
+		expectTypeOf(throwClient<User>('https://example.com', {json: true, throwOnHttpError: true})).toEqualTypeOf<
+			Promise<User>
+		>();
+		const widenedTrueOpts: RequestOptions & {json: true} = {json: true, throwOnHttpError: true};
+		expectTypeOf(throwClient<User>('https://example.com', widenedTrueOpts)).toEqualTypeOf<Promise<User | Response>>();
 	});
 
 	test('should return Response when throwOnHttpError is false without json', () => {

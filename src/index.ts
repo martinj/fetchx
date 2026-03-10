@@ -28,6 +28,10 @@ export class HttpError extends Error {
 }
 
 const non2xxResponseErrors = new WeakSet<HttpError>();
+const attemptSignalMetadata = new WeakMap<
+	RequestInitToHooks,
+	{baseSignal: AbortSignal | null | undefined; attemptSignal: AbortSignal | null | undefined; deadline?: number}
+>();
 
 async function getCookieHeader(cookieJar: ToughCookieJar, prefixUrl: string) {
 	const cookieString: string = await cookieJar.getCookieString(prefixUrl);
@@ -45,7 +49,7 @@ async function processOptions(
 	defaultOpts: CreateOptions,
 	url: string | URL,
 	options: RequestOptions
-): Promise<{url: URL; opts: RequestOptionsWithHeaders}> {
+): Promise<{url: URL; opts: RequestOptionsWithHeaders; firstAttemptDeadline?: number}> {
 	const {prefixUrl, ...defaults} = defaultOpts;
 	let opts: RequestOptionsWithHeaders = {
 		...defaults,
@@ -68,12 +72,28 @@ async function processOptions(
 		url = new URL(url);
 	}
 
-	if (opts.searchParams) {
-		url.search = new URLSearchParams(opts.searchParams).toString();
-	}
-
 	if (defaults.retry && opts.retry) {
 		opts.retry = {...defaults.retry, ...opts.retry};
+	}
+
+	let firstAttemptDeadline: number | undefined;
+
+	if (opts.beforeRequest) {
+		const hookOpts = createAttemptOptions(opts);
+		const {url: newUrl, opts: newOpts} = await opts.beforeRequest(url, hookOpts);
+		const resolvedHookOpts = resolveAttemptOptions(hookOpts, newOpts);
+		const hookSignalMetadata = attemptSignalMetadata.get(hookOpts);
+		const signalWasOverridden = resolvedHookOpts.signal !== hookSignalMetadata?.attemptSignal;
+		url = newUrl ?? url;
+		opts = persistAttemptOptions(resolvedHookOpts, hookOpts);
+		firstAttemptDeadline = hookSignalMetadata && !signalWasOverridden ? hookSignalMetadata.deadline : undefined;
+		if (signalWasOverridden) {
+			Reflect.deleteProperty(opts, 'timeout');
+		}
+	}
+
+	if (opts.searchParams) {
+		url.search = new URLSearchParams(opts.searchParams).toString();
 	}
 
 	if (opts.jsonBody !== undefined) {
@@ -95,18 +115,56 @@ async function processOptions(
 		}
 	}
 
-	if (opts.timeout) {
-		const timeoutSignal = AbortSignal.timeout(opts.timeout);
-		opts.signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
+	return {url, opts, firstAttemptDeadline};
+}
+
+function createAttemptOptions(
+	opts: RequestOptionsWithHeaders,
+	deadline = opts.timeout ? Date.now() + opts.timeout : undefined
+): RequestOptionsWithHeaders {
+	const baseSignal = opts.signal;
+	let signal = baseSignal;
+
+	if (deadline !== undefined) {
+		const timeoutSignal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+		signal = baseSignal ? AbortSignal.any([baseSignal, timeoutSignal]) : timeoutSignal;
 	}
 
-	if (opts.beforeRequest) {
-		const {url: newUrl, opts: newOpts} = await opts.beforeRequest(url, opts);
-		url = newUrl ?? url;
-		opts = newOpts ? {...opts, ...newOpts} : opts;
+	const attemptOpts = {...opts, signal};
+	attemptSignalMetadata.set(attemptOpts, {baseSignal, attemptSignal: signal, deadline});
+	return attemptOpts;
+}
+
+function resolveAttemptOptions(
+	attemptOpts: RequestOptionsWithHeaders,
+	returnedOpts?: RequestOptionsWithHeaders | BeforeRequestInitToHooks
+): RequestOptionsWithHeaders {
+	if (!returnedOpts || returnedOpts === attemptOpts) {
+		return attemptOpts;
 	}
 
-	return {url, opts};
+	const resolvedOpts: RequestOptionsWithHeaders = {
+		...attemptOpts,
+		headers: attemptOpts.headers
+	};
+
+	Object.assign(resolvedOpts, returnedOpts);
+	resolvedOpts.headers = returnedOpts.headers ?? attemptOpts.headers;
+
+	return resolvedOpts;
+}
+
+function persistAttemptOptions(
+	attemptOpts: RequestOptionsWithHeaders | RequestInitToHooks,
+	sourceAttemptOpts: RequestInitToHooks = attemptOpts
+): RequestOptionsWithHeaders {
+	const persistedSignalMetadata = attemptSignalMetadata.get(sourceAttemptOpts);
+	const persistedSignal =
+		persistedSignalMetadata && attemptOpts.signal === persistedSignalMetadata.attemptSignal
+			? persistedSignalMetadata.baseSignal
+			: attemptOpts.signal;
+
+	return {...attemptOpts, signal: persistedSignal};
 }
 
 function create(defaultOpts: CreateOptions = {}): Request {
@@ -116,29 +174,37 @@ function create(defaultOpts: CreateOptions = {}): Request {
 	};
 
 	async function request<T>(url: string | URL, opts: RequestOptions = {}): Promise<T | Response> {
-		const {url: pUrl, opts: pOpts} = await processOptions(defaults, url, opts);
+		const {url: currentUrl, opts: pOpts, firstAttemptDeadline} = await processOptions(defaults, url, opts);
 		const throwOnHttpError = pOpts.throwOnHttpError ?? true;
+		let currentOpts = pOpts;
+		let nextAttemptDeadline = firstAttemptDeadline;
 
 		try {
 			return await pRetry(
 				async () => {
-					let res = await fetch(pUrl, pOpts);
+					const requestOpts = createAttemptOptions(currentOpts, nextAttemptDeadline);
+					nextAttemptDeadline = undefined;
+					let res = await fetch(currentUrl, requestOpts);
 
-					if (pOpts.afterResponse) {
-						res = await pOpts.afterResponse(res, pUrl, pOpts);
+					if (currentOpts.afterResponse) {
+						try {
+							res = await currentOpts.afterResponse(res, currentUrl, requestOpts);
+						} finally {
+							currentOpts = persistAttemptOptions(requestOpts);
+						}
 					}
 
 					if (!res.ok) {
 						if (!throwOnHttpError) {
-							if (pOpts.cookieJar) {
-								await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
+							if (currentOpts.cookieJar) {
+								await storeCookies(currentOpts.cookieJar, currentUrl.toString(), res.headers.getSetCookie());
 							}
 							const error = new HttpError(res);
 							non2xxResponseErrors.add(error);
 							throw error;
 						}
 						let jsonBody: unknown;
-						if (pOpts.json) {
+						if (currentOpts.json) {
 							try {
 								jsonBody = await res.json();
 								// eslint-disable-next-line no-empty
@@ -147,11 +213,11 @@ function create(defaultOpts: CreateOptions = {}): Request {
 						throw new HttpError(res, undefined, {jsonBody});
 					}
 
-					if (pOpts.cookieJar) {
-						await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
+					if (currentOpts.cookieJar) {
+						await storeCookies(currentOpts.cookieJar, currentUrl.toString(), res.headers.getSetCookie());
 					}
 
-					if (pOpts.json) {
+					if (currentOpts.json) {
 						// Handle responses with no content (204, 205)
 						if (res.status === 204 || res.status === 205) {
 							return null as T;
@@ -211,12 +277,6 @@ function create(defaultOpts: CreateOptions = {}): Request {
 	return request;
 }
 
-export type RequestInitToHooks = Omit<RequestInit, 'headers'> & {headers: Headers};
-
-type RequestOptionsWithHeaders = Omit<RequestOptions, 'headers'> & {
-	headers: Headers;
-};
-
 export type RetryOptions = Pick<PRetryOptions, 'retries' | 'factor' | 'minTimeout' | 'onFailedAttempt'> & {
 	/**
 	 * Maximum retry after in ms (overrides retries)
@@ -245,7 +305,7 @@ export type RetryOptions = Pick<PRetryOptions, 'retries' | 'factor' | 'minTimeou
 
 export type URLSearchParamsInit = ConstructorParameters<typeof URLSearchParams>[0];
 
-export type RequestOptions = RequestInit & {
+type RequestBaseOptions = RequestInit & {
 	searchParams?: URLSearchParamsInit;
 	cookieJar?: ToughCookieJar;
 	json?: boolean;
@@ -255,16 +315,43 @@ export type RequestOptions = RequestInit & {
 	throwOnHttpError?: boolean;
 	jsonBody?: unknown;
 	timeout?: number;
+	retry?: RetryOptions;
+};
+
+export type RequestInitToHooks = Omit<
+	RequestBaseOptions,
+	'headers' | 'searchParams' | 'jsonBody' | 'retry' | 'throwOnHttpError'
+> & {
+	headers: Headers;
+	afterResponse?: AfterResponseHook;
+};
+
+export type BeforeRequestInitToHooks = Omit<RequestBaseOptions, 'headers'> & {
+	headers: Headers;
+	afterResponse?: AfterResponseHook;
+};
+
+export type BeforeRequestHook = (
+	url: URL,
+	opts: BeforeRequestInitToHooks
+) => Promise<{url?: URL; opts?: BeforeRequestInitToHooks}>;
+export type AfterResponseHook = (response: Response, url: URL, opts: RequestInitToHooks) => Promise<Response>;
+
+export type RequestOptions = RequestBaseOptions & {
 	/**
 	 *  Note this only occurs before the first request is made
 	 */
-	beforeRequest?: (url: URL, opts: RequestInitToHooks) => Promise<{url?: URL; opts?: RequestInitToHooks}>;
+	beforeRequest?: BeforeRequestHook;
 	/**
 	 * You can throw HttpError with isRetryable: true from this hook to retry the request
 	 * You may modify the url and opts here as well for the next request
 	 */
-	afterResponse?: (response: Response, url: URL, opts: RequestInitToHooks) => Promise<Response>;
-	retry?: RetryOptions;
+	afterResponse?: AfterResponseHook;
+};
+
+type RequestOptionsWithHeaders = Omit<RequestOptions, 'headers' | 'beforeRequest'> & {
+	headers: Headers;
+	beforeRequest?: BeforeRequestHook;
 };
 
 export type CreateOptions = RequestOptions & {
@@ -273,8 +360,8 @@ export type CreateOptions = RequestOptions & {
 	json?: boolean;
 };
 
-type RequestReturn<D extends CreateOptions, T> = D['json'] extends true
-	? D['throwOnHttpError'] extends false
+type RequestReturn<D extends CreateOptions, T> = D extends {json: true}
+	? D extends {throwOnHttpError: false} | {throwOnHttpError?: false}
 		? Promise<T | Response>
 		: Promise<T>
 	: Promise<Response>;
@@ -291,15 +378,55 @@ type MergeExtend<D extends CreateOptions, O extends CreateOptions | undefined> =
 
 export type Request<D extends CreateOptions = CreateOptions> = {
 	<T = unknown>(url: string | URL): RequestReturn<D, T>;
+	<
+		T = unknown,
+		O extends RequestOptions & {json: true; throwOnHttpError: true} = RequestOptions & {
+			json: true;
+			throwOnHttpError: true;
+		}
+	>(
+		url: string | URL,
+		options?: O
+	): Promise<T>;
+	<
+		T = unknown,
+		O extends RequestOptions & {json: true; throwOnHttpError: false} = RequestOptions & {
+			json: true;
+			throwOnHttpError: false;
+		}
+	>(
+		url: string | URL,
+		options?: O
+	): Promise<T | Response>;
+	<
+		T = unknown,
+		O extends RequestOptions & {json: true; throwOnHttpError?: undefined} = RequestOptions & {
+			json: true;
+			throwOnHttpError?: undefined;
+		}
+	>(
+		url: string | URL,
+		options?: O
+	): D extends {throwOnHttpError: false} | {throwOnHttpError?: false} ? Promise<T | Response> : Promise<T>;
 	<T = unknown, O extends RequestOptions & {json: true} = RequestOptions & {json: true}>(
 		url: string | URL,
 		options?: O
-	): RequestReturn<MergeOptions<D, O>, T>;
+	): Promise<T | Response>;
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
 	<T = unknown, O extends RequestOptions & {json: false} = RequestOptions & {json: false}>(
 		url: string | URL,
 		options?: O
 	): Promise<Response>;
+	<
+		T = unknown,
+		O extends RequestOptions & {throwOnHttpError: false; json?: true} = RequestOptions & {
+			throwOnHttpError: false;
+			json?: true;
+		}
+	>(
+		url: string | URL,
+		options?: O
+	): D extends {json: true} ? Promise<T | Response> : Promise<Response>;
 	<T = unknown, O extends RequestOptions = RequestOptions>(
 		url: string | URL,
 		options?: O

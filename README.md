@@ -58,7 +58,29 @@ const res = await fetchx('https://service.internal/health', {
 });
 ```
 
+`timeout` applies to each request attempt. Retry delays and later attempts get their own timeout budget.
+
 Set `factor: 1` for constant backoff. The default `factor: 2` uses exponential backoff.
+
+### Total operation deadline
+
+```typescript
+await fetchx('https://api.example.com/data', {
+  timeout: 1500,
+  signal: AbortSignal.timeout(5000),
+  retry: {retries: 2, minTimeout: 100}
+});
+```
+
+Use `signal` for a global deadline or cancellation shared across retries. If both `timeout` and `signal` are provided, whichever aborts first cancels the current attempt.
+
+The initial `signal` remains the operation-level cancellation signal for retry delays and future attempts.
+
+If a hook replaces `opts.signal`, that replacement only affects request attempts:
+
+- in `beforeRequest`, it replaces the first fetch attempt's internal timeout signal
+- in `afterResponse`, it affects later fetch attempts, but those attempts still honor `timeout` if configured
+- it does not retarget the retry controller or backoff cancellation once the operation has started
 
 ### Rate-limit handling (Retry-After)
 
@@ -99,9 +121,10 @@ The module accepts all standard `fetch` options plus these additional features:
 - `json`: `boolean` - Automatically parse response as JSON
 - `throwOnHttpError`: `boolean` - Throw `HttpError` for non-2xx responses (default: true)
 - `jsonBody`: `unknown` - Automatically JSON.stringify request body and set JSON headers
-- `timeout`: `number` - Request timeout in milliseconds
+- `timeout`: `number` - Per-request-attempt timeout in milliseconds
 - `prefixUrl`: `string` - Base URL to prepend to all request URLs
 - `searchParams`: `string | URLSearchParams | Record<string, string> | string[][]` - Query parameters to append to URL, accepts same types as URLSearchParams
+- `signal`: `AbortSignal` - Cancels the whole operation, including retry delays and future attempts
 
 ### Retry Options
 
@@ -131,17 +154,82 @@ The module accepts all standard `fetch` options plus these additional features:
 - `beforeRequest`: Hook function called before the request is made
 - `afterResponse`: Hook function called after receiving the response
 
+### Hook semantics
+
+`beforeRequest` receives pre-normalized request options:
+
+- `headers` is always a mutable `Headers` instance
+- `beforeRequest` can change high-level fields like `searchParams`, `jsonBody`, `cookieJar`, `signal`, and `headers`
+- those values are normalized after the hook returns
+- the initial request `signal` remains the whole-operation cancellation signal for retry delays and future attempts
+- replacing `opts.signal` in `beforeRequest` replaces the first fetch attempt's internal timeout signal, but does not redefine the operation-level retry controller
+- when `opts.searchParams` is present, it is the source of truth for the final query string
+- direct edits to `url.searchParams` may be overwritten by later `searchParams` normalization
+- if a hook wants full control of the URL query, delete `opts.searchParams` first and then update `url.searchParams`
+- when `opts.cookieJar` is present, it is the source of truth for request cookies
+- a `Cookie` header set in `beforeRequest` may be overwritten by later `cookieJar` normalization
+- if a hook wants full control of the outgoing `Cookie` header, delete `opts.cookieJar` first and then set `opts.headers.set('cookie', ...)`
+- deleting `opts.cookieJar` is all-or-nothing for that request path: it also disables response cookie persistence
+
+`afterResponse` receives normalized retry state:
+
+- `headers` is a mutable `Headers` instance
+- `searchParams` has already been applied to `url`
+- `jsonBody` has already been serialized into `body`
+- `afterResponse` can mutate request options for later retry attempts
+- replacing `opts.signal` in `afterResponse` affects later fetch attempts, but those attempts still honor `timeout` if configured and retry delays / whole-operation cancellation still use the initial signal
+- retry policy and `throwOnHttpError` are fixed when the request starts, so changing them in `afterResponse` has no effect
+
+For `afterResponse`, some original input fields are already consumed:
+
+- changing `opts.searchParams` has no effect; update `url.searchParams` instead
+- changing `opts.jsonBody` has no effect; update `opts.body` instead
+
+Retry-time hook mutations are preserved for later attempts. This includes:
+
+- mutating or replacing `opts.headers`
+- replacing `opts.signal` for later fetch attempts
+- reassigning `opts.cookieJar`
+- deleting options like `opts.afterResponse` to disable them on retries
+
 ### Hooks Example
 
 ```typescript
 const client = fetchx.extend({
   beforeRequest: async (url, opts) => {
-    // Modify request before it's sent
+    // High-level fields are still mutable here
+    opts.searchParams = {...opts.searchParams, trace: '1'};
+    opts.jsonBody = {signed: true};
+    opts.headers.set('authorization', 'Bearer token');
     return { url, opts };
   },
   afterResponse: async (response, url, opts) => {
-    // Handle response
+    // Mutations here affect later retry attempts
     return response;
+  }
+});
+```
+
+If you want to modify the URL query directly instead of using `opts.searchParams`, remove `searchParams` first:
+
+```typescript
+const client = fetchx.extend({
+  beforeRequest: async (url, opts) => {
+    delete opts.searchParams;
+    url.searchParams.set('trace', '1');
+    return {url, opts};
+  }
+});
+```
+
+If you want to control the outgoing `Cookie` header directly instead of using `cookieJar`, remove `cookieJar` first:
+
+```typescript
+const client = fetchx.extend({
+  beforeRequest: async (url, opts) => {
+    delete opts.cookieJar;
+    opts.headers.set('cookie', 'session=impersonated');
+    return {url, opts};
   }
 });
 ```

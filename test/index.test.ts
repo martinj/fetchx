@@ -4,9 +4,11 @@ import {scheduler} from 'node:timers/promises';
 import {CookieJar} from 'tough-cookie';
 import {afterEach, describe, expect, test, vi} from 'vitest';
 
-import fetchx, {HttpError, type RequestInitToHooks} from '../src/index';
+import fetchx, {type BeforeRequestInitToHooks, HttpError, type RequestInitToHooks} from '../src/index.js';
 
 describe('request', () => {
+	type RequestInfo = Parameters<typeof fetch>[0];
+
 	let server: {stop: () => Promise<void>};
 
 	afterEach(async () => {
@@ -108,10 +110,10 @@ describe('request', () => {
 		const response = await fetchx('https://jsonplaceholder.typicode.com/todos', {
 			searchParams: {userId: '1'}
 		});
-		const data = await response.json();
+		const data = (await response.json()) as Array<{userId: number}>;
 		expect(Array.isArray(data)).toBe(true);
 		expect(data.length).toBeGreaterThan(0);
-		expect(data[0].userId).toBe(1);
+		expect(data[0]!.userId).toBe(1);
 	});
 
 	test('should throw HttpError for non-200 responses', async () => {
@@ -179,6 +181,29 @@ describe('request', () => {
 
 		try {
 			await fetchx('https://jsonplaceholder.typicode.com/nonexistent', {json: true});
+			expect.fail('Should have thrown HttpError');
+		} catch (error) {
+			expect(error).toBeInstanceOf(HttpError);
+			if (error instanceof HttpError) {
+				expect(error.jsonBody).toEqual(errorBody);
+				expect(error.statusCode).toBe(404);
+			}
+		}
+	});
+
+	test('should include jsonBody in HttpError when afterResponse enables json parsing', async () => {
+		const errorBody = {error: 'Not Found', message: 'Resource does not exist'};
+		vi.spyOn(global, 'fetch').mockImplementation(() =>
+			Promise.resolve(new Response(JSON.stringify(errorBody), {status: 404}))
+		);
+
+		try {
+			await fetchx('https://jsonplaceholder.typicode.com/nonexistent', {
+				async afterResponse(response, _url, opts) {
+					opts.json = true;
+					return response;
+				}
+			});
 			expect.fail('Should have thrown HttpError');
 		} catch (error) {
 			expect(error).toBeInstanceOf(HttpError);
@@ -404,13 +429,13 @@ describe('request', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 
-		await vi.advanceTimersByTimeAsync(expectedDelays[0] - 1);
+		await vi.advanceTimersByTimeAsync(expectedDelays[0]! - 1);
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 
 		await vi.advanceTimersByTimeAsync(1);
 		expect(mockFetch).toHaveBeenCalledTimes(2);
 
-		await vi.advanceTimersByTimeAsync(expectedDelays[1] - 1);
+		await vi.advanceTimersByTimeAsync(expectedDelays[1]! - 1);
 		expect(mockFetch).toHaveBeenCalledTimes(2);
 
 		await vi.advanceTimersByTimeAsync(1);
@@ -430,7 +455,7 @@ describe('request', () => {
 		});
 
 		const response = await fetchx('https://httpbin.org/cookies', {cookieJar});
-		const data = await response.json();
+		const data = (await response.json()) as {cookies: {session: string}};
 
 		expect(data.cookies.session).toBe('123456');
 	});
@@ -445,14 +470,14 @@ describe('request', () => {
 		});
 
 		const response = await fetchx('https://httpbin.org/headers', {
-			async beforeRequest(url: URL, opts: RequestInitToHooks) {
+			async beforeRequest(url: URL, opts: BeforeRequestInitToHooks) {
 				opts.headers.set('X-Custom-Header', 'test-value');
 				url.searchParams.set('userId', '1');
 				return {url, opts};
 			}
 		});
 
-		const data = await response.json();
+		const data = (await response.json()) as {headers: {'X-Custom-Header': string}};
 		expect(data.headers['X-Custom-Header']).toBe('test-value');
 	});
 
@@ -564,7 +589,7 @@ describe('request', () => {
 	test('should throw an error when request exceeds timeout', async () => {
 		const timeout = 10;
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			await scheduler.wait(500);
 			return new Response('OK');
 		});
@@ -583,7 +608,7 @@ describe('request', () => {
 			// Return a promise that rejects when the signal is aborted
 			return new Promise((resolve, reject) => {
 				init?.signal?.addEventListener('abort', () => {
-					reject(new DOMException('This operation was aborted', 'AbortError'));
+					reject(new Error('This operation was aborted'));
 				});
 			});
 		});
@@ -608,11 +633,11 @@ describe('request', () => {
 			// Return a promise that rejects when the signal is aborted
 			return new Promise((resolve, reject) => {
 				if (init?.signal?.aborted) {
-					reject(new DOMException('This operation was aborted', 'AbortError'));
+					reject(new Error('This operation was aborted'));
 					return;
 				}
 				init?.signal?.addEventListener('abort', () => {
-					reject(new DOMException('This operation was aborted', 'AbortError'));
+					reject(new Error('This operation was aborted'));
 				});
 			});
 		});
@@ -632,7 +657,7 @@ describe('request', () => {
 		const abortController = new AbortController();
 		const timeout = 50;
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			await scheduler.wait(500); // Long delay
 			return new Response('OK');
 		});
@@ -646,11 +671,433 @@ describe('request', () => {
 		await expect(requestPromise).rejects.toThrow(/timeout|timed out/);
 	});
 
+	test('should apply timeout per retry attempt instead of globally', async () => {
+		let attempts = 0;
+
+		server = await createServer(async () => {
+			attempts++;
+			await scheduler.wait(40);
+			return new Response('retry', {status: 503});
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 50,
+				retry: {retries: 1, minTimeout: 80, factor: 1, statusCodes: [503]}
+			})
+		).rejects.toThrow(/503/);
+
+		expect(attempts).toBe(2);
+	});
+
+	test('should allow a global timeout via user-provided signal across retries', async () => {
+		let attempts = 0;
+
+		server = await createServer(async () => {
+			attempts++;
+			await scheduler.wait(20);
+			return new Response('retry', {status: 503});
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 100,
+				signal: AbortSignal.timeout(50),
+				retry: {retries: 1, minTimeout: 80, factor: 1, statusCodes: [503]}
+			})
+		).rejects.toThrow(/timeout|timed out|aborted/i);
+
+		expect(attempts).toBeLessThan(2);
+	});
+
+	test('should preserve afterResponse option mutations across timeout retries', async () => {
+		let attempts = 0;
+
+		server = await createServer(async (request) => {
+			attempts++;
+			if (attempts === 1) {
+				expect(request.headers.get('x-retry-token')).toBeNull();
+				await scheduler.wait(20);
+				return new Response('retry', {status: 503});
+			}
+
+			expect(request.headers.get('x-retry-token')).toBe('second-attempt');
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			timeout: 50,
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				if (response.status === 503) {
+					opts.headers = new Headers(opts.headers);
+					opts.headers.set('x-retry-token', 'second-attempt');
+				}
+
+				return response;
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(attempts).toBe(2);
+	});
+
+	test('should propagate per-attempt timeout signal into beforeRequest', async () => {
+		server = await createServer(async () => {
+			return new Response('OK');
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 20,
+				async beforeRequest(url, opts) {
+					await new Promise((resolve, reject) => {
+						if (opts.signal?.aborted) {
+							reject(opts.signal.reason);
+							return;
+						}
+
+						opts.signal?.addEventListener(
+							'abort',
+							() => {
+								reject(opts.signal?.reason);
+							},
+							{once: true}
+						);
+
+						setTimeout(resolve, 50);
+					});
+
+					return {url};
+				}
+			})
+		).rejects.toThrow(/timeout|timed out|aborted/i);
+	});
+
+	test('should propagate per-attempt timeout signal into afterResponse', async () => {
+		server = await createServer(async () => {
+			return new Response('OK');
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 20,
+				async afterResponse(response, _url, opts) {
+					await new Promise((resolve, reject) => {
+						if (opts.signal?.aborted) {
+							reject(opts.signal.reason);
+							return;
+						}
+
+						opts.signal?.addEventListener(
+							'abort',
+							() => {
+								reject(opts.signal?.reason);
+							},
+							{once: true}
+						);
+
+						setTimeout(resolve, 50);
+					});
+
+					return response;
+				}
+			})
+		).rejects.toThrow(/timeout|timed out|aborted/i);
+	});
+
+	test('should preserve beforeRequest-replaced signal across retries', async () => {
+		const replacementSignal = new AbortController().signal;
+		const signals: Array<AbortSignal | null | undefined> = [];
+
+		vi.spyOn(global, 'fetch').mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => {
+			signals.push(init?.signal);
+			if (signals.length === 1) {
+				return Promise.resolve(new Response('retry', {status: 503}));
+			}
+
+			return Promise.resolve(new Response('OK'));
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async beforeRequest(url, opts) {
+				opts.signal = replacementSignal;
+				return {url};
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(signals).toHaveLength(2);
+		expect(signals[0]).toBe(replacementSignal);
+		expect(signals[1]).toBe(replacementSignal);
+	});
+
+	test('should preserve hook-replaced signal across retries', async () => {
+		const replacementSignal = new AbortController().signal;
+		const signals: Array<AbortSignal | null | undefined> = [];
+
+		vi.spyOn(global, 'fetch').mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => {
+			signals.push(init?.signal);
+			if (signals.length === 1) {
+				return Promise.resolve(new Response('retry', {status: 503}));
+			}
+
+			return Promise.resolve(new Response('OK'));
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				if (response.status === 503) {
+					opts.signal = replacementSignal;
+					return response;
+				}
+
+				expect(opts.signal).toBe(replacementSignal);
+				return response;
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(signals).toHaveLength(2);
+		expect(signals[1]).toBe(replacementSignal);
+	});
+
+	test('should preserve reassigned options when afterResponse throws retryable error', async () => {
+		const mockFetch = vi
+			.spyOn(global, 'fetch')
+			.mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+				expect((init?.headers as Headers).get('x-retry-token')).toBeNull();
+				return Promise.resolve(new Response('retry', {status: 503}));
+			})
+			.mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+				expect((init?.headers as Headers).get('x-retry-token')).toBe('from-throw');
+				return Promise.resolve(new Response('OK'));
+			});
+
+		const response = await fetchx('http://localhost:9393', {
+			timeout: 50,
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				if (response.status === 503) {
+					opts.headers = new Headers(opts.headers);
+					opts.headers.set('x-retry-token', 'from-throw');
+					throw new HttpError(response, 'retry with reassigned options', {isRetryable: true});
+				}
+
+				return response;
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+	});
+
+	test('should preserve base signal when beforeRequest returns new opts with timeout and retries', async () => {
+		let firstSignal: AbortSignal | null | undefined;
+
+		const mockFetch = vi
+			.spyOn(global, 'fetch')
+			.mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+				expect((init?.headers as Headers).get('x-before-request')).toBe('immutable');
+				firstSignal = init?.signal;
+				expect(firstSignal?.aborted).toBe(false);
+				return Promise.resolve(new Response('retry', {status: 503}));
+			})
+			.mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+				expect((init?.headers as Headers).get('x-before-request')).toBe('immutable');
+				expect(init?.signal).toBeDefined();
+				expect(init?.signal?.aborted).toBe(false);
+				expect(init?.signal).not.toBe(firstSignal);
+				return Promise.resolve(new Response('OK'));
+			});
+
+		const response = await fetchx('http://localhost:9393', {
+			timeout: 50,
+			retry: {retries: 1, minTimeout: 80, factor: 1, statusCodes: [503]},
+			async beforeRequest(url, opts) {
+				return {
+					url,
+					opts: {
+						...opts,
+						headers: new Headers([...opts.headers, ['x-before-request', 'immutable']])
+					}
+				};
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+	});
+
+	test('should allow beforeRequest to modify searchParams before normalization', async () => {
+		server = await createServer(async (request) => {
+			const url = new URL(request.url ?? '', 'http://localhost:9393');
+			expect(url.searchParams.get('page')).toBe('2');
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			searchParams: {page: '1'},
+			async beforeRequest(url, opts) {
+				opts.searchParams = {page: '2'};
+				return {url, opts};
+			}
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	test('should let beforeRequest delete searchParams and control the final query directly', async () => {
+		server = await createServer(async (request) => {
+			const url = new URL(request.url ?? '', 'http://localhost:9393');
+			expect(url.search).toBe('?trace=1');
+			expect(url.searchParams.get('page')).toBeNull();
+			expect(url.searchParams.get('trace')).toBe('1');
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			searchParams: {page: '1'},
+			async beforeRequest(url, opts) {
+				delete opts.searchParams;
+				url.searchParams.set('trace', '1');
+				return {url, opts};
+			}
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	test('should allow beforeRequest to modify jsonBody before normalization', async () => {
+		vi.spyOn(global, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+			expect(input.toString()).toBe('https://example.com/');
+			expect(init?.body).toBe(JSON.stringify({name: 'Jane'}));
+			expect((init?.headers as Headers).get('content-type')).toBe('application/json');
+			return Promise.resolve(new Response(null, {status: 200}));
+		});
+
+		const response = await fetchx('https://example.com', {
+			method: 'POST',
+			jsonBody: {name: 'John'},
+			async beforeRequest(url, opts) {
+				opts.jsonBody = {name: 'Jane'};
+				return {url, opts};
+			}
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	test('should count async beforeRequest time against the same timeout budget', async () => {
+		server = await createServer(async () => {
+			await scheduler.wait(30);
+			return new Response('OK');
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 50,
+				async beforeRequest(url, opts) {
+					await scheduler.wait(40);
+					return {url, opts};
+				}
+			})
+		).rejects.toThrow(/timeout|timed out|aborted/i);
+	});
+
+	test('should preserve deleted retry hook options across attempts', async () => {
+		let hookCalls = 0;
+
+		server = await createServer(async () => {
+			if (hookCalls === 0) {
+				return new Response('retry', {status: 503});
+			}
+
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				hookCalls++;
+
+				if (response.status === 503) {
+					delete opts.afterResponse;
+					throw new HttpError(response, 'retry after deleting hook', {isRetryable: true});
+				}
+
+				throw new Error('afterResponse should not run after being deleted');
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(hookCalls).toBe(1);
+	});
+
+	test('should let beforeRequest signal override replace timeout on the first attempt', async () => {
+		const replacementController = new AbortController();
+
+		server = await createServer(async () => {
+			await scheduler.wait(40);
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			timeout: 20,
+			async beforeRequest(url, opts) {
+				opts.signal = replacementController.signal;
+				return {url, opts};
+			}
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	test('should store cookies in reassigned cookieJar after afterResponse retry changes', async () => {
+		const originalJar = {
+			getCookieString: vi.fn().mockResolvedValue(''),
+			setCookie: vi.fn()
+		};
+		const replacementJar = {
+			getCookieString: vi.fn().mockResolvedValue(''),
+			setCookie: vi.fn()
+		};
+		let attempts = 0;
+
+		server = await createServer(async () => {
+			attempts++;
+			if (attempts === 1) {
+				return new Response('retry', {status: 503});
+			}
+
+			return new Response('OK', {headers: {'Set-Cookie': 'session=next; Path=/; HttpOnly'}});
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			cookieJar: originalJar,
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				if (response.status === 503) {
+					opts.cookieJar = replacementJar;
+					throw new HttpError(response, 'retry with replacement jar', {isRetryable: true});
+				}
+
+				return response;
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(originalJar.setCookie).not.toHaveBeenCalled();
+		expect(replacementJar.setCookie).toHaveBeenCalledTimes(1);
+	});
+
 	test('should retry based on Retry-After header', async () => {
 		let first = true;
 		let time;
 		let diff = 0;
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			if (first) {
 				first = false;
 				time = Date.now();
@@ -681,12 +1128,12 @@ describe('request', () => {
 		const response = await fetchx('https://httpbin.org/status/200', {
 			async afterResponse(response: Response) {
 				const modified = response.clone();
-				const headers = new Headers(modified.headers);
+				const headers = new Headers(Array.from(modified.headers.entries()));
 				headers.set('x-modified-header', 'modified');
 				return new Response(modified.body, {
 					status: modified.status,
 					statusText: modified.statusText,
-					headers
+					headers: Array.from(headers.entries())
 				});
 			}
 		});
@@ -984,7 +1431,7 @@ describe('request', () => {
 	});
 });
 
-function createServer(handler: (req: Request) => Promise<Response>) {
+async function createServer(handler: (req: Request) => Promise<Response>) {
 	if (typeof Bun !== 'undefined') {
 		const server = Bun.serve({
 			port: 9393,
@@ -1011,7 +1458,7 @@ function createServer(handler: (req: Request) => Promise<Response>) {
 			}
 			const body = Buffer.concat(chunks);
 
-			const request = new Request(url, {
+			const request = new Request(url.toString(), {
 				method: req.method,
 				headers,
 				body: body.length > 0 ? body : undefined
@@ -1040,7 +1487,13 @@ function createServer(handler: (req: Request) => Promise<Response>) {
 		}
 	});
 
-	server.listen(9393);
+	await new Promise<void>((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(9393, () => {
+			server.off('error', reject);
+			resolve();
+		});
+	});
 
 	return {
 		stop: () => new Promise<void>((resolve) => server.close(() => resolve()))
