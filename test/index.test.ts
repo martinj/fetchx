@@ -4,7 +4,7 @@ import {scheduler} from 'node:timers/promises';
 import {CookieJar} from 'tough-cookie';
 import {afterEach, describe, expect, test, vi} from 'vitest';
 
-import fetchx, {HttpError, type RequestInitToHooks} from '../src/index.js';
+import fetchx, {type BeforeRequestInitToHooks, HttpError, type RequestInitToHooks} from '../src/index.js';
 
 describe('request', () => {
 	type RequestInfo = Parameters<typeof fetch>[0];
@@ -447,7 +447,7 @@ describe('request', () => {
 		});
 
 		const response = await fetchx('https://httpbin.org/headers', {
-			async beforeRequest(url: URL, opts: RequestInitToHooks) {
+			async beforeRequest(url: URL, opts: BeforeRequestInitToHooks) {
 				opts.headers.set('X-Custom-Header', 'test-value');
 				url.searchParams.set('userId', '1');
 				return {url, opts};
@@ -903,6 +903,65 @@ describe('request', () => {
 
 		expect(response.status).toBe(200);
 		expect(attempts).toBe(2);
+	});
+
+	test('should allow beforeRequest to modify searchParams before normalization', async () => {
+		server = createServer(async (request) => {
+			const url = new URL(request.url ?? '', 'http://localhost:9393');
+			expect(url.searchParams.get('page')).toBe('2');
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			searchParams: {page: '1'},
+			async beforeRequest(url, opts) {
+				opts.searchParams = {page: '2'};
+				return {url, opts};
+			}
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	test('should let beforeRequest delete searchParams and control the final query directly', async () => {
+		server = createServer(async (request) => {
+			const url = new URL(request.url ?? '', 'http://localhost:9393');
+			expect(url.search).toBe('?trace=1');
+			expect(url.searchParams.get('page')).toBeNull();
+			expect(url.searchParams.get('trace')).toBe('1');
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			searchParams: {page: '1'},
+			async beforeRequest(url, opts) {
+				delete opts.searchParams;
+				url.searchParams.set('trace', '1');
+				return {url, opts};
+			}
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	test('should allow beforeRequest to modify jsonBody before normalization', async () => {
+		vi.spyOn(global, 'fetch').mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+			expect(input.toString()).toBe('https://example.com/');
+			expect(init?.body).toBe(JSON.stringify({name: 'Jane'}));
+			expect((init?.headers as Headers).get('content-type')).toBe('application/json');
+			return Promise.resolve(new Response(null, {status: 200}));
+		});
+
+		const response = await fetchx('https://example.com', {
+			method: 'POST',
+			jsonBody: {name: 'John'},
+			async beforeRequest(url, opts) {
+				opts.jsonBody = {name: 'Jane'};
+				return {url, opts};
+			}
+		});
+
+		expect(response.status).toBe(200);
 	});
 
 	test('should count async beforeRequest time against the same timeout budget', async () => {

@@ -150,18 +150,31 @@ The module accepts all standard `fetch` options plus these additional features:
 
 ### Hook semantics
 
-Hooks receive normalized request state:
+`beforeRequest` receives pre-normalized request options:
 
 - `headers` is always a mutable `Headers` instance
-- `beforeRequest` runs after `searchParams` has already been applied to `url`
-- `beforeRequest` runs after `jsonBody` has already been serialized into `body`
-- `beforeRequest` can mutate `url`, `headers`, `body`, `method`, `signal`, and other live request fields
+- `beforeRequest` can change high-level fields like `searchParams`, `jsonBody`, `cookieJar`, `signal`, and `headers`
+- those values are normalized after the hook returns
+- when `opts.searchParams` is present, it is the source of truth for the final query string
+- direct edits to `url.searchParams` may be overwritten by later `searchParams` normalization
+- if a hook wants full control of the URL query, delete `opts.searchParams` first and then update `url.searchParams`
+- when `opts.cookieJar` is present, it is the source of truth for request cookies
+- a `Cookie` header set in `beforeRequest` may be overwritten by later `cookieJar` normalization
+- if a hook wants full control of the outgoing `Cookie` header, delete `opts.cookieJar` first and then set `opts.headers.set('cookie', ...)`
+- deleting `opts.cookieJar` is all-or-nothing for that request path: it also disables response cookie persistence
+
+`afterResponse` receives normalized retry state:
+
+- `headers` is a mutable `Headers` instance
+- `searchParams` has already been applied to `url`
+- `jsonBody` has already been serialized into `body`
 - `afterResponse` can mutate request options for later retry attempts
+- retry policy and `throwOnHttpError` are fixed when the request starts, so changing them in `afterResponse` has no effect
 
-Some original input fields are already consumed before hooks run:
+For `afterResponse`, some original input fields are already consumed:
 
-- changing `opts.searchParams` in `beforeRequest` has no effect; update `url.searchParams` instead
-- changing `opts.jsonBody` in `beforeRequest` has no effect; update `opts.body` instead
+- changing `opts.searchParams` has no effect; update `url.searchParams` instead
+- changing `opts.jsonBody` has no effect; update `opts.body` instead
 
 Retry-time hook mutations are preserved for later attempts. This includes:
 
@@ -175,14 +188,39 @@ Retry-time hook mutations are preserved for later attempts. This includes:
 ```typescript
 const client = fetchx.extend({
   beforeRequest: async (url, opts) => {
-    // url/search params and body are already normalized here
-    url.searchParams.set('trace', '1');
+    // High-level fields are still mutable here
+    opts.searchParams = {...opts.searchParams, trace: '1'};
+    opts.jsonBody = {signed: true};
     opts.headers.set('authorization', 'Bearer token');
     return { url, opts };
   },
   afterResponse: async (response, url, opts) => {
     // Mutations here affect later retry attempts
     return response;
+  }
+});
+```
+
+If you want to modify the URL query directly instead of using `opts.searchParams`, remove `searchParams` first:
+
+```typescript
+const client = fetchx.extend({
+  beforeRequest: async (url, opts) => {
+    delete opts.searchParams;
+    url.searchParams.set('trace', '1');
+    return {url, opts};
+  }
+});
+```
+
+If you want to control the outgoing `Cookie` header directly instead of using `cookieJar`, remove `cookieJar` first:
+
+```typescript
+const client = fetchx.extend({
+  beforeRequest: async (url, opts) => {
+    delete opts.cookieJar;
+    opts.headers.set('cookie', 'session=impersonated');
+    return {url, opts};
   }
 });
 ```
