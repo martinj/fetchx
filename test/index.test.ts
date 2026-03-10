@@ -872,14 +872,21 @@ describe('request', () => {
 	});
 
 	test('should preserve base signal when beforeRequest returns new opts with timeout and retries', async () => {
+		let firstSignal: AbortSignal | null | undefined;
+
 		const mockFetch = vi
 			.spyOn(global, 'fetch')
 			.mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
 				expect((init?.headers as Headers).get('x-before-request')).toBe('immutable');
+				firstSignal = init?.signal;
+				expect(firstSignal?.aborted).toBe(false);
 				return Promise.resolve(new Response('retry', {status: 503}));
 			})
 			.mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
 				expect((init?.headers as Headers).get('x-before-request')).toBe('immutable');
+				expect(init?.signal).toBeDefined();
+				expect(init?.signal?.aborted).toBe(false);
+				expect(init?.signal).not.toBe(firstSignal);
 				return Promise.resolve(new Response('OK'));
 			});
 
