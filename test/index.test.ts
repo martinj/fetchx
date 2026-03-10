@@ -842,18 +842,16 @@ describe('request', () => {
 	});
 
 	test('should preserve reassigned options when afterResponse throws retryable error', async () => {
-		let attempts = 0;
-
-		server = await createServer(async (request) => {
-			attempts++;
-			if (attempts === 1) {
-				expect(request.headers.get('x-retry-token')).toBeNull();
-				return new Response('retry', {status: 503});
-			}
-
-			expect(request.headers.get('x-retry-token')).toBe('from-throw');
-			return new Response('OK');
-		});
+		const mockFetch = vi
+			.spyOn(global, 'fetch')
+			.mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+				expect((init?.headers as Headers).get('x-retry-token')).toBeNull();
+				return Promise.resolve(new Response('retry', {status: 503}));
+			})
+			.mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => {
+				expect((init?.headers as Headers).get('x-retry-token')).toBe('from-throw');
+				return Promise.resolve(new Response('OK'));
+			});
 
 		const response = await fetchx('http://localhost:9393', {
 			timeout: 50,
@@ -870,7 +868,7 @@ describe('request', () => {
 		});
 
 		expect(response.status).toBe(200);
-		expect(attempts).toBe(2);
+		expect(mockFetch).toHaveBeenCalledTimes(2);
 	});
 
 	test('should preserve base signal when beforeRequest returns new opts with timeout and retries', async () => {
