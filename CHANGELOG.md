@@ -1,6 +1,10 @@
 ### Changelog
 
-#### [1.2.0](https://github.com/martinj/fetchx/compare/1.1.0...1.2.0) 2026-03-09
+#### [2.0.0](https://github.com/martinj/fetchx/compare/1.2.0...2.0.0) 2026-03-10
+
+- fix: preserve timeout and hook retry semantics [`#4`](https://github.com/martinj/fetchx/pull/4)
+
+#### [1.2.0](https://github.com/martinj/fetchx/compare/1.1.0...1.2.0) 2026-03-10
 
 - fix: own retry factor default [`61eba20`](https://github.com/martinj/fetchx/commit/61eba201d957dac7bd3c85381658409e4df74e5e)
 - fix: expose retry factor [`f9954e2`](https://github.com/martinj/fetchx/commit/f9954e2b596568dc1d4238efb742e3ddc5437640)
