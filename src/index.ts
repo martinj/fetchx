@@ -273,12 +273,6 @@ function create(defaultOpts: CreateOptions = {}): Request {
 	return request;
 }
 
-export type RequestInitToHooks = Omit<RequestInit, 'headers'> & {headers: Headers};
-
-type RequestOptionsWithHeaders = Omit<RequestOptions, 'headers'> & {
-	headers: Headers;
-};
-
 export type RetryOptions = Pick<PRetryOptions, 'retries' | 'factor' | 'minTimeout' | 'onFailedAttempt'> & {
 	/**
 	 * Maximum retry after in ms (overrides retries)
@@ -320,13 +314,28 @@ export type RequestOptions = RequestInit & {
 	/**
 	 *  Note this only occurs before the first request is made
 	 */
-	beforeRequest?: (url: URL, opts: RequestInitToHooks) => Promise<{url?: URL; opts?: RequestInitToHooks}>;
+	beforeRequest?: BeforeRequestHook;
 	/**
 	 * You can throw HttpError with isRetryable: true from this hook to retry the request
 	 * You may modify the url and opts here as well for the next request
 	 */
 	afterResponse?: (response: Response, url: URL, opts: RequestInitToHooks) => Promise<Response>;
 	retry?: RetryOptions;
+};
+
+export type RequestInitToHooks = Omit<RequestOptions, 'headers' | 'searchParams' | 'jsonBody'> & {
+	headers: Headers;
+};
+
+export type BeforeRequestInitToHooks = Omit<RequestInitToHooks, 'cookieJar'>;
+export type BeforeRequestHook = (
+	url: URL,
+	opts: BeforeRequestInitToHooks
+) => Promise<{url?: URL; opts?: BeforeRequestInitToHooks}>;
+
+type RequestOptionsWithHeaders = Omit<RequestOptions, 'headers' | 'beforeRequest'> & {
+	headers: Headers;
+	beforeRequest?: BeforeRequestHook;
 };
 
 export type CreateOptions = RequestOptions & {

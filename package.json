@@ -29,8 +29,8 @@
     }
   },
   "scripts": {
-    "build": "rm -rf dist && tsc",
-    "typecheck": "tsc --noEmit",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint .",
     "format": "prettier --write src test",
     "watch": "vitest --watch",

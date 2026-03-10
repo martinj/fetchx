@@ -4,9 +4,11 @@ import {scheduler} from 'node:timers/promises';
 import {CookieJar} from 'tough-cookie';
 import {afterEach, describe, expect, test, vi} from 'vitest';
 
-import fetchx, {HttpError, type RequestInitToHooks} from '../src/index';
+import fetchx, {HttpError, type RequestInitToHooks} from '../src/index.js';
 
 describe('request', () => {
+	type RequestInfo = Parameters<typeof fetch>[0];
+
 	let server: {stop: () => Promise<void>};
 
 	afterEach(async () => {
@@ -108,10 +110,10 @@ describe('request', () => {
 		const response = await fetchx('https://jsonplaceholder.typicode.com/todos', {
 			searchParams: {userId: '1'}
 		});
-		const data = await response.json();
+		const data = (await response.json()) as Array<{userId: number}>;
 		expect(Array.isArray(data)).toBe(true);
 		expect(data.length).toBeGreaterThan(0);
-		expect(data[0].userId).toBe(1);
+		expect(data[0]!.userId).toBe(1);
 	});
 
 	test('should throw HttpError for non-200 responses', async () => {
@@ -404,13 +406,13 @@ describe('request', () => {
 		await vi.advanceTimersByTimeAsync(0);
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 
-		await vi.advanceTimersByTimeAsync(expectedDelays[0] - 1);
+		await vi.advanceTimersByTimeAsync(expectedDelays[0]! - 1);
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 
 		await vi.advanceTimersByTimeAsync(1);
 		expect(mockFetch).toHaveBeenCalledTimes(2);
 
-		await vi.advanceTimersByTimeAsync(expectedDelays[1] - 1);
+		await vi.advanceTimersByTimeAsync(expectedDelays[1]! - 1);
 		expect(mockFetch).toHaveBeenCalledTimes(2);
 
 		await vi.advanceTimersByTimeAsync(1);
@@ -430,7 +432,7 @@ describe('request', () => {
 		});
 
 		const response = await fetchx('https://httpbin.org/cookies', {cookieJar});
-		const data = await response.json();
+		const data = (await response.json()) as {cookies: {session: string}};
 
 		expect(data.cookies.session).toBe('123456');
 	});
@@ -452,7 +454,7 @@ describe('request', () => {
 			}
 		});
 
-		const data = await response.json();
+		const data = (await response.json()) as {headers: {'X-Custom-Header': string}};
 		expect(data.headers['X-Custom-Header']).toBe('test-value');
 	});
 
@@ -583,7 +585,7 @@ describe('request', () => {
 			// Return a promise that rejects when the signal is aborted
 			return new Promise((resolve, reject) => {
 				init?.signal?.addEventListener('abort', () => {
-					reject(new DOMException('This operation was aborted', 'AbortError'));
+					reject(new Error('This operation was aborted'));
 				});
 			});
 		});
@@ -608,11 +610,11 @@ describe('request', () => {
 			// Return a promise that rejects when the signal is aborted
 			return new Promise((resolve, reject) => {
 				if (init?.signal?.aborted) {
-					reject(new DOMException('This operation was aborted', 'AbortError'));
+					reject(new Error('This operation was aborted'));
 					return;
 				}
 				init?.signal?.addEventListener('abort', () => {
-					reject(new DOMException('This operation was aborted', 'AbortError'));
+					reject(new Error('This operation was aborted'));
 				});
 			});
 		});
@@ -1041,12 +1043,12 @@ describe('request', () => {
 		const response = await fetchx('https://httpbin.org/status/200', {
 			async afterResponse(response: Response) {
 				const modified = response.clone();
-				const headers = new Headers(modified.headers);
+				const headers = new Headers(Array.from(modified.headers.entries()));
 				headers.set('x-modified-header', 'modified');
 				return new Response(modified.body, {
 					status: modified.status,
 					statusText: modified.statusText,
-					headers
+					headers: Array.from(headers.entries())
 				});
 			}
 		});
@@ -1371,7 +1373,7 @@ function createServer(handler: (req: Request) => Promise<Response>) {
 			}
 			const body = Buffer.concat(chunks);
 
-			const request = new Request(url, {
+			const request = new Request(url.toString(), {
 				method: req.method,
 				headers,
 				body: body.length > 0 ? body : undefined

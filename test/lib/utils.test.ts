@@ -1,6 +1,6 @@
 import {describe, expect, test} from 'vitest';
 
-import {calculateRetryAfter} from '../../src/lib/utils';
+import {calculateRetryAfter} from '../../src/lib/utils.js';
 
 describe('calculateRetryAfter', () => {
 	test('should return undefined when no Retry-After header is present', () => {

@@ -74,6 +74,8 @@ await fetchx('https://api.example.com/data', {
 
 Use `signal` for a global deadline or cancellation shared across retries. If both `timeout` and `signal` are provided, whichever aborts first cancels the current attempt.
 
+If a hook replaces `opts.signal`, that replacement becomes the active signal for later work and retries. In `beforeRequest`, replacing `opts.signal` also overrides the internal timeout signal for the first fetch attempt.
+
 ### Rate-limit handling (Retry-After)
 
 ```typescript
@@ -146,16 +148,40 @@ The module accepts all standard `fetch` options plus these additional features:
 - `beforeRequest`: Hook function called before the request is made
 - `afterResponse`: Hook function called after receiving the response
 
+### Hook semantics
+
+Hooks receive normalized request state:
+
+- `headers` is always a mutable `Headers` instance
+- `beforeRequest` runs after `searchParams` has already been applied to `url`
+- `beforeRequest` runs after `jsonBody` has already been serialized into `body`
+- `beforeRequest` can mutate `url`, `headers`, `body`, `method`, `signal`, and other live request fields
+- `afterResponse` can mutate request options for later retry attempts
+
+Some original input fields are already consumed before hooks run:
+
+- changing `opts.searchParams` in `beforeRequest` has no effect; update `url.searchParams` instead
+- changing `opts.jsonBody` in `beforeRequest` has no effect; update `opts.body` instead
+
+Retry-time hook mutations are preserved for later attempts. This includes:
+
+- mutating or replacing `opts.headers`
+- replacing `opts.signal`
+- reassigning `opts.cookieJar`
+- deleting options like `opts.afterResponse` to disable them on retries
+
 ### Hooks Example
 
 ```typescript
 const client = fetchx.extend({
   beforeRequest: async (url, opts) => {
-    // Modify request before it's sent
+    // url/search params and body are already normalized here
+    url.searchParams.set('trace', '1');
+    opts.headers.set('authorization', 'Bearer token');
     return { url, opts };
   },
   afterResponse: async (response, url, opts) => {
-    // Handle response
+    // Mutations here affect later retry attempts
     return response;
   }
 });
