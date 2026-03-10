@@ -566,7 +566,7 @@ describe('request', () => {
 	test('should throw an error when request exceeds timeout', async () => {
 		const timeout = 10;
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			await scheduler.wait(500);
 			return new Response('OK');
 		});
@@ -634,7 +634,7 @@ describe('request', () => {
 		const abortController = new AbortController();
 		const timeout = 50;
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			await scheduler.wait(500); // Long delay
 			return new Response('OK');
 		});
@@ -651,7 +651,7 @@ describe('request', () => {
 	test('should apply timeout per retry attempt instead of globally', async () => {
 		let attempts = 0;
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			attempts++;
 			await scheduler.wait(40);
 			return new Response('retry', {status: 503});
@@ -670,7 +670,7 @@ describe('request', () => {
 	test('should allow a global timeout via user-provided signal across retries', async () => {
 		let attempts = 0;
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			attempts++;
 			await scheduler.wait(20);
 			return new Response('retry', {status: 503});
@@ -690,7 +690,7 @@ describe('request', () => {
 	test('should preserve afterResponse option mutations across timeout retries', async () => {
 		let attempts = 0;
 
-		server = createServer(async (request) => {
+		server = await createServer(async (request) => {
 			attempts++;
 			if (attempts === 1) {
 				expect(request.headers.get('x-retry-token')).toBeNull();
@@ -720,7 +720,7 @@ describe('request', () => {
 	});
 
 	test('should propagate per-attempt timeout signal into beforeRequest', async () => {
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			return new Response('OK');
 		});
 
@@ -752,7 +752,7 @@ describe('request', () => {
 	});
 
 	test('should propagate per-attempt timeout signal into afterResponse', async () => {
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			return new Response('OK');
 		});
 
@@ -844,7 +844,7 @@ describe('request', () => {
 	test('should preserve reassigned options when afterResponse throws retryable error', async () => {
 		let attempts = 0;
 
-		server = createServer(async (request) => {
+		server = await createServer(async (request) => {
 			attempts++;
 			if (attempts === 1) {
 				expect(request.headers.get('x-retry-token')).toBeNull();
@@ -876,7 +876,7 @@ describe('request', () => {
 	test('should preserve base signal when beforeRequest returns new opts with timeout and retries', async () => {
 		let attempts = 0;
 
-		server = createServer(async (request) => {
+		server = await createServer(async (request) => {
 			attempts++;
 			expect(request.headers.get('x-before-request')).toBe('immutable');
 
@@ -906,7 +906,7 @@ describe('request', () => {
 	});
 
 	test('should allow beforeRequest to modify searchParams before normalization', async () => {
-		server = createServer(async (request) => {
+		server = await createServer(async (request) => {
 			const url = new URL(request.url ?? '', 'http://localhost:9393');
 			expect(url.searchParams.get('page')).toBe('2');
 			return new Response('OK');
@@ -924,7 +924,7 @@ describe('request', () => {
 	});
 
 	test('should let beforeRequest delete searchParams and control the final query directly', async () => {
-		server = createServer(async (request) => {
+		server = await createServer(async (request) => {
 			const url = new URL(request.url ?? '', 'http://localhost:9393');
 			expect(url.search).toBe('?trace=1');
 			expect(url.searchParams.get('page')).toBeNull();
@@ -965,7 +965,7 @@ describe('request', () => {
 	});
 
 	test('should count async beforeRequest time against the same timeout budget', async () => {
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			await scheduler.wait(30);
 			return new Response('OK');
 		});
@@ -984,7 +984,7 @@ describe('request', () => {
 	test('should preserve deleted retry hook options across attempts', async () => {
 		let hookCalls = 0;
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			if (hookCalls === 0) {
 				return new Response('retry', {status: 503});
 			}
@@ -1013,7 +1013,7 @@ describe('request', () => {
 	test('should let beforeRequest signal override replace timeout on the first attempt', async () => {
 		const replacementController = new AbortController();
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			await scheduler.wait(40);
 			return new Response('OK');
 		});
@@ -1040,7 +1040,7 @@ describe('request', () => {
 		};
 		let attempts = 0;
 
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			attempts++;
 			if (attempts === 1) {
 				return new Response('retry', {status: 503});
@@ -1071,7 +1071,7 @@ describe('request', () => {
 		let first = true;
 		let time;
 		let diff = 0;
-		server = createServer(async () => {
+		server = await createServer(async () => {
 			if (first) {
 				first = false;
 				time = Date.now();
@@ -1405,7 +1405,7 @@ describe('request', () => {
 	});
 });
 
-function createServer(handler: (req: Request) => Promise<Response>) {
+async function createServer(handler: (req: Request) => Promise<Response>) {
 	if (typeof Bun !== 'undefined') {
 		const server = Bun.serve({
 			port: 9393,
@@ -1461,7 +1461,13 @@ function createServer(handler: (req: Request) => Promise<Response>) {
 		}
 	});
 
-	server.listen(9393);
+	await new Promise<void>((resolve, reject) => {
+		server.once('error', reject);
+		server.listen(9393, () => {
+			server.off('error', reject);
+			resolve();
+		});
+	});
 
 	return {
 		stop: () => new Promise<void>((resolve) => server.close(() => resolve()))
