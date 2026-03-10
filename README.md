@@ -74,7 +74,13 @@ await fetchx('https://api.example.com/data', {
 
 Use `signal` for a global deadline or cancellation shared across retries. If both `timeout` and `signal` are provided, whichever aborts first cancels the current attempt.
 
-If a hook replaces `opts.signal`, that replacement becomes the active signal for later work and retries. In `beforeRequest`, replacing `opts.signal` also overrides the internal timeout signal for the first fetch attempt.
+The initial `signal` remains the operation-level cancellation signal for retry delays and future attempts.
+
+If a hook replaces `opts.signal`, that replacement only affects request attempts:
+
+- in `beforeRequest`, it replaces the first fetch attempt's internal timeout signal
+- in `afterResponse`, it affects later fetch attempts, but those attempts still honor `timeout` if configured
+- it does not retarget the retry controller or backoff cancellation once the operation has started
 
 ### Rate-limit handling (Retry-After)
 
@@ -155,6 +161,8 @@ The module accepts all standard `fetch` options plus these additional features:
 - `headers` is always a mutable `Headers` instance
 - `beforeRequest` can change high-level fields like `searchParams`, `jsonBody`, `cookieJar`, `signal`, and `headers`
 - those values are normalized after the hook returns
+- the initial request `signal` remains the whole-operation cancellation signal for retry delays and future attempts
+- replacing `opts.signal` in `beforeRequest` replaces the first fetch attempt's internal timeout signal, but does not redefine the operation-level retry controller
 - when `opts.searchParams` is present, it is the source of truth for the final query string
 - direct edits to `url.searchParams` may be overwritten by later `searchParams` normalization
 - if a hook wants full control of the URL query, delete `opts.searchParams` first and then update `url.searchParams`
@@ -169,6 +177,7 @@ The module accepts all standard `fetch` options plus these additional features:
 - `searchParams` has already been applied to `url`
 - `jsonBody` has already been serialized into `body`
 - `afterResponse` can mutate request options for later retry attempts
+- replacing `opts.signal` in `afterResponse` affects later fetch attempts, but those attempts still honor `timeout` if configured and retry delays / whole-operation cancellation still use the initial signal
 - retry policy and `throwOnHttpError` are fixed when the request starts, so changing them in `afterResponse` has no effect
 
 For `afterResponse`, some original input fields are already consumed:
@@ -179,7 +188,7 @@ For `afterResponse`, some original input fields are already consumed:
 Retry-time hook mutations are preserved for later attempts. This includes:
 
 - mutating or replacing `opts.headers`
-- replacing `opts.signal`
+- replacing `opts.signal` for later fetch attempts
 - reassigning `opts.cookieJar`
 - deleting options like `opts.afterResponse` to disable them on retries
 
