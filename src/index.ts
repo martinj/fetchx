@@ -204,7 +204,7 @@ function create(defaultOpts: CreateOptions = {}): Request {
 							throw error;
 						}
 						let jsonBody: unknown;
-						if (pOpts.json) {
+						if (currentOpts.json) {
 							try {
 								jsonBody = await res.json();
 								// eslint-disable-next-line no-empty

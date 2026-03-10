@@ -191,6 +191,29 @@ describe('request', () => {
 		}
 	});
 
+	test('should include jsonBody in HttpError when afterResponse enables json parsing', async () => {
+		const errorBody = {error: 'Not Found', message: 'Resource does not exist'};
+		vi.spyOn(global, 'fetch').mockImplementation(() =>
+			Promise.resolve(new Response(JSON.stringify(errorBody), {status: 404}))
+		);
+
+		try {
+			await fetchx('https://jsonplaceholder.typicode.com/nonexistent', {
+				async afterResponse(response, _url, opts) {
+					opts.json = true;
+					return response;
+				}
+			});
+			expect.fail('Should have thrown HttpError');
+		} catch (error) {
+			expect(error).toBeInstanceOf(HttpError);
+			if (error instanceof HttpError) {
+				expect(error.jsonBody).toEqual(errorBody);
+				expect(error.statusCode).toBe(404);
+			}
+		}
+	});
+
 	test('should not include jsonBody in HttpError when json option is false', async () => {
 		const errorBody = {error: 'Not Found', message: 'Resource does not exist'};
 		vi.spyOn(global, 'fetch').mockImplementation(() =>
