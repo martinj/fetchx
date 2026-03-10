@@ -646,6 +646,366 @@ describe('request', () => {
 		await expect(requestPromise).rejects.toThrow(/timeout|timed out/);
 	});
 
+	test('should apply timeout per retry attempt instead of globally', async () => {
+		let attempts = 0;
+
+		server = createServer(async () => {
+			attempts++;
+			await scheduler.wait(40);
+			return new Response('retry', {status: 503});
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 50,
+				retry: {retries: 1, minTimeout: 80, factor: 1, statusCodes: [503]}
+			})
+		).rejects.toThrow(/503/);
+
+		expect(attempts).toBe(2);
+	});
+
+	test('should allow a global timeout via user-provided signal across retries', async () => {
+		let attempts = 0;
+
+		server = createServer(async () => {
+			attempts++;
+			await scheduler.wait(20);
+			return new Response('retry', {status: 503});
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 100,
+				signal: AbortSignal.timeout(50),
+				retry: {retries: 1, minTimeout: 80, factor: 1, statusCodes: [503]}
+			})
+		).rejects.toThrow(/timeout|timed out|aborted/i);
+
+		expect(attempts).toBeLessThan(2);
+	});
+
+	test('should preserve afterResponse option mutations across timeout retries', async () => {
+		let attempts = 0;
+
+		server = createServer(async (request) => {
+			attempts++;
+			if (attempts === 1) {
+				expect(request.headers.get('x-retry-token')).toBeNull();
+				await scheduler.wait(20);
+				return new Response('retry', {status: 503});
+			}
+
+			expect(request.headers.get('x-retry-token')).toBe('second-attempt');
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			timeout: 50,
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				if (response.status === 503) {
+					opts.headers = new Headers(opts.headers);
+					opts.headers.set('x-retry-token', 'second-attempt');
+				}
+
+				return response;
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(attempts).toBe(2);
+	});
+
+	test('should propagate per-attempt timeout signal into beforeRequest', async () => {
+		server = createServer(async () => {
+			return new Response('OK');
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 20,
+				async beforeRequest(url, opts) {
+					await new Promise((resolve, reject) => {
+						if (opts.signal?.aborted) {
+							reject(opts.signal.reason);
+							return;
+						}
+
+						opts.signal?.addEventListener(
+							'abort',
+							() => {
+								reject(opts.signal?.reason);
+							},
+							{once: true}
+						);
+
+						setTimeout(resolve, 50);
+					});
+
+					return {url};
+				}
+			})
+		).rejects.toThrow(/timeout|timed out|aborted/i);
+	});
+
+	test('should propagate per-attempt timeout signal into afterResponse', async () => {
+		server = createServer(async () => {
+			return new Response('OK');
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 20,
+				async afterResponse(response, _url, opts) {
+					await new Promise((resolve, reject) => {
+						if (opts.signal?.aborted) {
+							reject(opts.signal.reason);
+							return;
+						}
+
+						opts.signal?.addEventListener(
+							'abort',
+							() => {
+								reject(opts.signal?.reason);
+							},
+							{once: true}
+						);
+
+						setTimeout(resolve, 50);
+					});
+
+					return response;
+				}
+			})
+		).rejects.toThrow(/timeout|timed out|aborted/i);
+	});
+
+	test('should preserve beforeRequest-replaced signal across retries', async () => {
+		const replacementSignal = new AbortController().signal;
+		const signals: Array<AbortSignal | null | undefined> = [];
+
+		vi.spyOn(global, 'fetch').mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => {
+			signals.push(init?.signal);
+			if (signals.length === 1) {
+				return Promise.resolve(new Response('retry', {status: 503}));
+			}
+
+			return Promise.resolve(new Response('OK'));
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async beforeRequest(url, opts) {
+				opts.signal = replacementSignal;
+				return {url};
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(signals).toHaveLength(2);
+		expect(signals[0]).toBe(replacementSignal);
+		expect(signals[1]).toBe(replacementSignal);
+	});
+
+	test('should preserve hook-replaced signal across retries', async () => {
+		const replacementSignal = new AbortController().signal;
+		const signals: Array<AbortSignal | null | undefined> = [];
+
+		vi.spyOn(global, 'fetch').mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => {
+			signals.push(init?.signal);
+			if (signals.length === 1) {
+				return Promise.resolve(new Response('retry', {status: 503}));
+			}
+
+			return Promise.resolve(new Response('OK'));
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				if (response.status === 503) {
+					opts.signal = replacementSignal;
+					return response;
+				}
+
+				expect(opts.signal).toBe(replacementSignal);
+				return response;
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(signals).toHaveLength(2);
+		expect(signals[1]).toBe(replacementSignal);
+	});
+
+	test('should preserve reassigned options when afterResponse throws retryable error', async () => {
+		let attempts = 0;
+
+		server = createServer(async (request) => {
+			attempts++;
+			if (attempts === 1) {
+				expect(request.headers.get('x-retry-token')).toBeNull();
+				return new Response('retry', {status: 503});
+			}
+
+			expect(request.headers.get('x-retry-token')).toBe('from-throw');
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			timeout: 50,
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				if (response.status === 503) {
+					opts.headers = new Headers(opts.headers);
+					opts.headers.set('x-retry-token', 'from-throw');
+					throw new HttpError(response, 'retry with reassigned options', {isRetryable: true});
+				}
+
+				return response;
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(attempts).toBe(2);
+	});
+
+	test('should preserve base signal when beforeRequest returns new opts with timeout and retries', async () => {
+		let attempts = 0;
+
+		server = createServer(async (request) => {
+			attempts++;
+			expect(request.headers.get('x-before-request')).toBe('immutable');
+
+			if (attempts === 1) {
+				return new Response('retry', {status: 503});
+			}
+
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			timeout: 50,
+			retry: {retries: 1, minTimeout: 80, factor: 1, statusCodes: [503]},
+			async beforeRequest(url, opts) {
+				return {
+					url,
+					opts: {
+						...opts,
+						headers: new Headers([...opts.headers, ['x-before-request', 'immutable']])
+					}
+				};
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(attempts).toBe(2);
+	});
+
+	test('should count async beforeRequest time against the same timeout budget', async () => {
+		server = createServer(async () => {
+			await scheduler.wait(30);
+			return new Response('OK');
+		});
+
+		await expect(
+			fetchx('http://localhost:9393', {
+				timeout: 50,
+				async beforeRequest(url, opts) {
+					await scheduler.wait(40);
+					return {url, opts};
+				}
+			})
+		).rejects.toThrow(/timeout|timed out|aborted/i);
+	});
+
+	test('should preserve deleted retry hook options across attempts', async () => {
+		let hookCalls = 0;
+
+		server = createServer(async () => {
+			if (hookCalls === 0) {
+				return new Response('retry', {status: 503});
+			}
+
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				hookCalls++;
+
+				if (response.status === 503) {
+					delete opts.afterResponse;
+					throw new HttpError(response, 'retry after deleting hook', {isRetryable: true});
+				}
+
+				throw new Error('afterResponse should not run after being deleted');
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(hookCalls).toBe(1);
+	});
+
+	test('should let beforeRequest signal override replace timeout on the first attempt', async () => {
+		const replacementController = new AbortController();
+
+		server = createServer(async () => {
+			await scheduler.wait(40);
+			return new Response('OK');
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			timeout: 20,
+			async beforeRequest(url, opts) {
+				opts.signal = replacementController.signal;
+				return {url, opts};
+			}
+		});
+
+		expect(response.status).toBe(200);
+	});
+
+	test('should store cookies in reassigned cookieJar after afterResponse retry changes', async () => {
+		const originalJar = {
+			getCookieString: vi.fn().mockResolvedValue(''),
+			setCookie: vi.fn()
+		};
+		const replacementJar = {
+			getCookieString: vi.fn().mockResolvedValue(''),
+			setCookie: vi.fn()
+		};
+		let attempts = 0;
+
+		server = createServer(async () => {
+			attempts++;
+			if (attempts === 1) {
+				return new Response('retry', {status: 503});
+			}
+
+			return new Response('OK', {headers: {'Set-Cookie': 'session=next; Path=/; HttpOnly'}});
+		});
+
+		const response = await fetchx('http://localhost:9393', {
+			cookieJar: originalJar,
+			retry: {retries: 1, minTimeout: 0, factor: 1, statusCodes: [503]},
+			async afterResponse(response, _url, opts) {
+				if (response.status === 503) {
+					opts.cookieJar = replacementJar;
+					throw new HttpError(response, 'retry with replacement jar', {isRetryable: true});
+				}
+
+				return response;
+			}
+		});
+
+		expect(response.status).toBe(200);
+		expect(originalJar.setCookie).not.toHaveBeenCalled();
+		expect(replacementJar.setCookie).toHaveBeenCalledTimes(1);
+	});
+
 	test('should retry based on Retry-After header', async () => {
 		let first = true;
 		let time;

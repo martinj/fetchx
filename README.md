@@ -58,7 +58,21 @@ const res = await fetchx('https://service.internal/health', {
 });
 ```
 
+`timeout` applies to each request attempt. Retry delays and later attempts get their own timeout budget.
+
 Set `factor: 1` for constant backoff. The default `factor: 2` uses exponential backoff.
+
+### Total operation deadline
+
+```typescript
+await fetchx('https://api.example.com/data', {
+  timeout: 1500,
+  signal: AbortSignal.timeout(5000),
+  retry: {retries: 2, minTimeout: 100}
+});
+```
+
+Use `signal` for a global deadline or cancellation shared across retries. If both `timeout` and `signal` are provided, whichever aborts first cancels the current attempt.
 
 ### Rate-limit handling (Retry-After)
 
@@ -99,9 +113,10 @@ The module accepts all standard `fetch` options plus these additional features:
 - `json`: `boolean` - Automatically parse response as JSON
 - `throwOnHttpError`: `boolean` - Throw `HttpError` for non-2xx responses (default: true)
 - `jsonBody`: `unknown` - Automatically JSON.stringify request body and set JSON headers
-- `timeout`: `number` - Request timeout in milliseconds
+- `timeout`: `number` - Per-request-attempt timeout in milliseconds
 - `prefixUrl`: `string` - Base URL to prepend to all request URLs
 - `searchParams`: `string | URLSearchParams | Record<string, string> | string[][]` - Query parameters to append to URL, accepts same types as URLSearchParams
+- `signal`: `AbortSignal` - Cancels the whole operation, including retry delays and future attempts
 
 ### Retry Options
 

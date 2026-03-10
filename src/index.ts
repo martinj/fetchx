@@ -28,6 +28,10 @@ export class HttpError extends Error {
 }
 
 const non2xxResponseErrors = new WeakSet<HttpError>();
+const attemptSignalMetadata = new WeakMap<
+	RequestInitToHooks,
+	{baseSignal: AbortSignal | null | undefined; attemptSignal: AbortSignal | null | undefined; deadline?: number}
+>();
 
 async function getCookieHeader(cookieJar: ToughCookieJar, prefixUrl: string) {
 	const cookieString: string = await cookieJar.getCookieString(prefixUrl);
@@ -45,7 +49,7 @@ async function processOptions(
 	defaultOpts: CreateOptions,
 	url: string | URL,
 	options: RequestOptions
-): Promise<{url: URL; opts: RequestOptionsWithHeaders}> {
+): Promise<{url: URL; opts: RequestOptionsWithHeaders; firstAttemptDeadline?: number}> {
 	const {prefixUrl, ...defaults} = defaultOpts;
 	let opts: RequestOptionsWithHeaders = {
 		...defaults,
@@ -95,18 +99,68 @@ async function processOptions(
 		}
 	}
 
-	if (opts.timeout) {
-		const timeoutSignal = AbortSignal.timeout(opts.timeout);
-		opts.signal = opts.signal ? AbortSignal.any([opts.signal, timeoutSignal]) : timeoutSignal;
-	}
+	let firstAttemptDeadline: number | undefined;
 
 	if (opts.beforeRequest) {
-		const {url: newUrl, opts: newOpts} = await opts.beforeRequest(url, opts);
+		const hookOpts = createAttemptOptions(opts);
+		const {url: newUrl, opts: newOpts} = await opts.beforeRequest(url, hookOpts);
+		const resolvedHookOpts = resolveAttemptOptions(hookOpts, newOpts);
+		const hookSignalMetadata = attemptSignalMetadata.get(hookOpts);
+		const signalWasOverridden = resolvedHookOpts.signal !== hookSignalMetadata?.attemptSignal;
 		url = newUrl ?? url;
-		opts = newOpts ? {...opts, ...newOpts} : opts;
+		opts = persistAttemptOptions(resolvedHookOpts, hookOpts);
+		firstAttemptDeadline = hookSignalMetadata && !signalWasOverridden ? hookSignalMetadata.deadline : undefined;
+		if (signalWasOverridden) {
+			Reflect.deleteProperty(opts, 'timeout');
+		}
 	}
 
-	return {url, opts};
+	return {url, opts, firstAttemptDeadline};
+}
+
+function createAttemptOptions(
+	opts: RequestOptionsWithHeaders,
+	deadline = opts.timeout ? Date.now() + opts.timeout : undefined
+): RequestOptionsWithHeaders {
+	const baseSignal = opts.signal;
+	let signal = baseSignal;
+
+	if (deadline !== undefined) {
+		const timeoutSignal = AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+		signal = baseSignal ? AbortSignal.any([baseSignal, timeoutSignal]) : timeoutSignal;
+	}
+
+	const attemptOpts = {...opts, signal};
+	attemptSignalMetadata.set(attemptOpts, {baseSignal, attemptSignal: signal, deadline});
+	return attemptOpts;
+}
+
+function resolveAttemptOptions(
+	attemptOpts: RequestOptionsWithHeaders,
+	returnedOpts?: RequestOptionsWithHeaders | RequestInitToHooks
+): RequestOptionsWithHeaders {
+	if (!returnedOpts || returnedOpts === attemptOpts) {
+		return attemptOpts;
+	}
+
+	return {
+		...attemptOpts,
+		...returnedOpts,
+		headers: returnedOpts.headers ?? attemptOpts.headers
+	};
+}
+
+function persistAttemptOptions(
+	attemptOpts: RequestOptionsWithHeaders | RequestInitToHooks,
+	sourceAttemptOpts: RequestInitToHooks = attemptOpts
+): RequestOptionsWithHeaders {
+	const persistedSignalMetadata = attemptSignalMetadata.get(sourceAttemptOpts);
+	const persistedSignal =
+		persistedSignalMetadata && attemptOpts.signal === persistedSignalMetadata.attemptSignal
+			? persistedSignalMetadata.baseSignal
+			: attemptOpts.signal;
+
+	return {...attemptOpts, signal: persistedSignal};
 }
 
 function create(defaultOpts: CreateOptions = {}): Request {
@@ -116,22 +170,30 @@ function create(defaultOpts: CreateOptions = {}): Request {
 	};
 
 	async function request<T>(url: string | URL, opts: RequestOptions = {}): Promise<T | Response> {
-		const {url: pUrl, opts: pOpts} = await processOptions(defaults, url, opts);
+		const {url: currentUrl, opts: pOpts, firstAttemptDeadline} = await processOptions(defaults, url, opts);
 		const throwOnHttpError = pOpts.throwOnHttpError ?? true;
+		let currentOpts = pOpts;
+		let nextAttemptDeadline = firstAttemptDeadline;
 
 		try {
 			return await pRetry(
 				async () => {
-					let res = await fetch(pUrl, pOpts);
+					const requestOpts = createAttemptOptions(currentOpts, nextAttemptDeadline);
+					nextAttemptDeadline = undefined;
+					let res = await fetch(currentUrl, requestOpts);
 
-					if (pOpts.afterResponse) {
-						res = await pOpts.afterResponse(res, pUrl, pOpts);
+					if (currentOpts.afterResponse) {
+						try {
+							res = await currentOpts.afterResponse(res, currentUrl, requestOpts);
+						} finally {
+							currentOpts = persistAttemptOptions(requestOpts);
+						}
 					}
 
 					if (!res.ok) {
 						if (!throwOnHttpError) {
-							if (pOpts.cookieJar) {
-								await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
+							if (currentOpts.cookieJar) {
+								await storeCookies(currentOpts.cookieJar, currentUrl.toString(), res.headers.getSetCookie());
 							}
 							const error = new HttpError(res);
 							non2xxResponseErrors.add(error);
@@ -147,11 +209,11 @@ function create(defaultOpts: CreateOptions = {}): Request {
 						throw new HttpError(res, undefined, {jsonBody});
 					}
 
-					if (pOpts.cookieJar) {
-						await storeCookies(pOpts.cookieJar, pUrl.toString(), res.headers.getSetCookie());
+					if (currentOpts.cookieJar) {
+						await storeCookies(currentOpts.cookieJar, currentUrl.toString(), res.headers.getSetCookie());
 					}
 
-					if (pOpts.json) {
+					if (currentOpts.json) {
 						// Handle responses with no content (204, 205)
 						if (res.status === 204 || res.status === 205) {
 							return null as T;
