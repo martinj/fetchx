@@ -4,7 +4,7 @@ import {scheduler} from 'node:timers/promises';
 import {CookieJar} from 'tough-cookie';
 import {afterEach, describe, expect, test, vi} from 'vitest';
 
-import fetchx, {type BeforeRequestInitToHooks, HttpError, type RequestInitToHooks} from '../src/index.js';
+import fetchx, {type BeforeRequestInitToHooks, HttpError, NetworkError, type RequestInitToHooks} from '../src/index.js';
 
 describe('request', () => {
 	type RequestInfo = Parameters<typeof fetch>[0];
@@ -1327,6 +1327,137 @@ describe('request', () => {
 	});
 
 	describe('network error handling', () => {
+		test('should throw NetworkError with readable Node error details', async () => {
+			const cause = new Error('connect ECONNREFUSED 127.0.0.1:65534');
+			Object.assign(cause, {code: 'ECONNREFUSED'});
+			const networkError = new TypeError('fetch failed', {cause});
+
+			vi.spyOn(global, 'fetch').mockRejectedValueOnce(networkError);
+
+			const error = await fetchx('http://localhost:9999', {retry: {retries: 0}}).catch((error: unknown) => error);
+
+			expect(error).toMatchObject({
+				name: 'NetworkError',
+				code: 'ECONNREFUSED',
+				message: 'Connection refused by remote host (ECONNREFUSED)',
+				cause: networkError
+			});
+			expect(Object.keys(error as NetworkError)).not.toContain('originalError');
+			expect(Object.keys(error as NetworkError)).not.toContain('networkCause');
+		});
+
+		test('should use nested Node fetch failure causes for NetworkError details', async () => {
+			const cause = new Error('socket hang up');
+			const wrappedCause = new TypeError('fetch failed', {cause});
+			const networkError = new TypeError('fetch failed', {cause: wrappedCause});
+
+			vi.spyOn(global, 'fetch').mockRejectedValueOnce(networkError);
+
+			await expect(fetchx('http://localhost:9999', {retry: {retries: 0}})).rejects.toThrow(
+				new NetworkError(networkError)
+			);
+		});
+
+		test('should use readable messages for code-only network errors', async () => {
+			const cause = new Error();
+			Object.assign(cause, {code: 'UND_ERR_SOCKET'});
+			const networkError = new TypeError('fetch failed', {cause});
+
+			vi.spyOn(global, 'fetch').mockRejectedValueOnce(networkError);
+
+			await expect(
+				fetchx('http://localhost:9999', {retry: {retries: 0}}).catch((error: unknown) => error)
+			).resolves.toMatchObject({
+				name: 'NetworkError',
+				code: 'UND_ERR_SOCKET',
+				message: 'Socket closed unexpectedly (UND_ERR_SOCKET)'
+			});
+		});
+
+		test('should use generic messages for unknown network error codes', async () => {
+			const cause = new Error('transport internals');
+			Object.assign(cause, {code: 'UND_ERR_UNKNOWN'});
+			const networkError = new TypeError('fetch failed', {cause});
+
+			vi.spyOn(global, 'fetch').mockRejectedValueOnce(networkError);
+
+			await expect(
+				fetchx('http://localhost:9999', {retry: {retries: 0}}).catch((error: unknown) => error)
+			).resolves.toMatchObject({
+				name: 'NetworkError',
+				code: 'UND_ERR_UNKNOWN',
+				message: 'Network error (UND_ERR_UNKNOWN)',
+				cause: networkError
+			});
+		});
+
+		test('should use coded Undici causes from terminated fetch errors', async () => {
+			const cause = new Error('other side closed');
+			Object.assign(cause, {code: 'UND_ERR_SOCKET'});
+			const networkError = new TypeError('terminated', {cause});
+
+			vi.spyOn(global, 'fetch').mockRejectedValueOnce(networkError);
+
+			await expect(
+				fetchx('http://localhost:9999', {retry: {retries: 0}}).catch((error: unknown) => error)
+			).resolves.toMatchObject({
+				name: 'NetworkError',
+				code: 'UND_ERR_SOCKET',
+				message: 'Socket closed unexpectedly (UND_ERR_SOCKET)',
+				cause: networkError
+			});
+		});
+
+		test('should use nested coded causes from terminated fetch errors', async () => {
+			const cause = new Error('connect ECONNREFUSED 127.0.0.1:65534');
+			Object.assign(cause, {code: 'ECONNREFUSED'});
+			const wrappedCause = new TypeError('fetch failed', {cause});
+			const networkError = new TypeError('terminated', {cause: wrappedCause});
+
+			vi.spyOn(global, 'fetch').mockRejectedValueOnce(networkError);
+
+			await expect(
+				fetchx('http://localhost:9999', {retry: {retries: 0}}).catch((error: unknown) => error)
+			).resolves.toMatchObject({
+				name: 'NetworkError',
+				code: 'ECONNREFUSED',
+				message: 'Connection refused by remote host (ECONNREFUSED)',
+				cause: networkError
+			});
+		});
+
+		test('should normalize network errors while reading successful JSON responses', async () => {
+			const cause = new Error('other side closed');
+			Object.assign(cause, {code: 'UND_ERR_SOCKET'});
+			const networkError = new TypeError('terminated', {cause});
+			const response = new Response('{"ok": true}');
+			vi.spyOn(response, 'json').mockRejectedValueOnce(networkError);
+			vi.spyOn(global, 'fetch').mockResolvedValueOnce(response);
+
+			await expect(fetchx('http://localhost:9999', {json: true, retry: {retries: 0}})).rejects.toMatchObject({
+				name: 'NetworkError',
+				code: 'UND_ERR_SOCKET',
+				cause: networkError
+			});
+		});
+
+		test('should not normalize or retry network-like errors thrown from hooks', async () => {
+			const cause = new Error('connect ECONNREFUSED 127.0.0.1:65534');
+			Object.assign(cause, {code: 'ECONNREFUSED'});
+			const hookError = new TypeError('fetch failed', {cause});
+			const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('OK'));
+
+			await expect(
+				fetchx('http://localhost:9999', {
+					afterResponse: () => {
+						throw hookError;
+					},
+					retry: {retries: 1, minTimeout: 0}
+				})
+			).rejects.toBe(hookError);
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+		});
+
 		test('should retry on network errors by default', async () => {
 			const networkError = new TypeError('fetch failed');
 			Object.assign(networkError, {
@@ -1350,6 +1481,31 @@ describe('request', () => {
 			expect(mockFetch).toHaveBeenCalledTimes(2);
 		});
 
+		test('should pass NetworkError to failed attempt hooks', async () => {
+			const cause = new Error('connect ECONNREFUSED 127.0.0.1:65534');
+			Object.assign(cause, {code: 'ECONNREFUSED'});
+			const networkError = new TypeError('fetch failed', {cause});
+			let failedAttemptError: Error | undefined;
+
+			vi.spyOn(global, 'fetch').mockRejectedValueOnce(networkError).mockResolvedValueOnce(new Response('OK'));
+
+			await fetchx('http://localhost:9999', {
+				retry: {
+					retries: 1,
+					minTimeout: 0,
+					onFailedAttempt: ({error}) => {
+						failedAttemptError = error;
+					}
+				}
+			});
+
+			expect(failedAttemptError).toBeInstanceOf(NetworkError);
+			expect(failedAttemptError).toMatchObject({
+				code: 'ECONNREFUSED',
+				cause: networkError
+			});
+		});
+
 		test('should not retry on network errors when networkErrors is false', async () => {
 			const networkError = new TypeError('fetch failed');
 			Object.assign(networkError, {
@@ -1366,7 +1522,7 @@ describe('request', () => {
 				fetchx('http://localhost:9999', {
 					retry: {retries: 1, minTimeout: 0, networkErrors: false}
 				})
-			).rejects.toThrow('fetch failed');
+			).rejects.toThrow(NetworkError);
 		});
 
 		test('should use shouldRetry for non-HttpError and non-network errors', async () => {
