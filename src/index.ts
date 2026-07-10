@@ -2,7 +2,20 @@ import isNetworkError from 'is-network-error';
 import {scheduler} from 'node:timers/promises';
 import pRetry, {type Options as PRetryOptions, type RetryContext} from 'p-retry';
 
+import {NetworkError} from './lib/network-error.js';
 import {calculateRetryAfter, mergeHeaders} from './lib/utils.js';
+
+export {NetworkError} from './lib/network-error.js';
+
+function normalizeNetworkError(error: unknown): unknown {
+	if (error instanceof NetworkError) {
+		return error;
+	}
+	if (error instanceof Error && isNetworkError(error)) {
+		return new NetworkError(error);
+	}
+	return error;
+}
 
 const defaultRetryConfig: RetryOptions = {
 	retries: 2,
@@ -184,7 +197,12 @@ function create(defaultOpts: CreateOptions = {}): Request {
 				async () => {
 					const requestOpts = createAttemptOptions(currentOpts, nextAttemptDeadline);
 					nextAttemptDeadline = undefined;
-					let res = await fetch(currentUrl, requestOpts);
+					let res: Response;
+					try {
+						res = await fetch(currentUrl, requestOpts);
+					} catch (error) {
+						throw normalizeNetworkError(error);
+					}
 
 					if (currentOpts.afterResponse) {
 						try {
@@ -222,7 +240,11 @@ function create(defaultOpts: CreateOptions = {}): Request {
 						if (res.status === 204 || res.status === 205) {
 							return null as T;
 						}
-						return res.json() as Promise<T>;
+						try {
+							return (await res.json()) as T;
+						} catch (error) {
+							throw normalizeNetworkError(error);
+						}
 					}
 
 					return res;
@@ -235,7 +257,7 @@ function create(defaultOpts: CreateOptions = {}): Request {
 					async shouldRetry(context: RetryContext) {
 						const {error} = context;
 						if (!(error instanceof HttpError)) {
-							if (pOpts.retry?.networkErrors && isNetworkError(error)) {
+							if (pOpts.retry?.networkErrors && error instanceof NetworkError) {
 								return true;
 							}
 							return pOpts.retry?.shouldRetry ? pOpts.retry.shouldRetry(context) : false;

@@ -318,6 +318,23 @@ try {
 }
 ```
 
+Network-level fetch failures throw `NetworkError`. In Node.js, fetchx unwraps the useful `cause`
+from `TypeError: fetch failed` and exposes the low-level code:
+
+```typescript
+import fetchx, { NetworkError } from '@martinj/fetchx';
+
+try {
+  await fetchx('http://localhost:9999');
+} catch (error) {
+  if (error instanceof NetworkError) {
+    console.log(error.code);                 // ECONNREFUSED
+    console.log(error.message);              // Connection refused by remote host (ECONNREFUSED)
+    console.log(error.cause);                // Original fetch error
+  }
+}
+```
+
 To handle non-2xx responses without exceptions, set `throwOnHttpError: false`:
 
 ```typescript
